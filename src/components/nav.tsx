@@ -6,7 +6,7 @@ import { LayoutDashboard, Settings, Star, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "EAC Dashboard", icon: LayoutDashboard },
   { href: "/p0", label: "P0 Customers", icon: Star },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
@@ -19,7 +19,7 @@ export function Nav() {
         <div className="h-7 w-7 rounded bg-accent/20 border border-accent/40 flex items-center justify-center">
           <Activity className="h-4 w-4 text-accent" />
         </div>
-        <div className="text-sm font-semibold">Customer Triage</div>
+        <div className="text-sm font-semibold">JIRA Analyzer</div>
       </div>
       <nav className="flex-1 px-2 py-3 space-y-1">
         {ITEMS.map((item) => {

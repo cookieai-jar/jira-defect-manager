@@ -50,7 +50,7 @@ export default function DashboardPage() {
     <div className="flex-1 overflow-auto scroll-thin">
       <header className="px-6 h-14 border-b border-border flex items-center justify-between sticky top-0 z-10 bg-bg/90 backdrop-blur">
         <div>
-          <h1 className="text-lg font-semibold">Triage dashboard</h1>
+          <h1 className="text-lg font-semibold">EAC Triage dashboard</h1>
           {report && (
             <p className="text-[11px] text-fg-subtle">
               Generated {new Date(report.generatedAt).toLocaleString()}
