@@ -7,8 +7,10 @@ import { SyncButton } from "@/components/sync-button";
 import { P0Card } from "@/components/p0-card";
 import { TriageTable } from "@/components/triage-table";
 import { TicketDrawer } from "@/components/ticket-drawer";
-import { CheckCircle2, MessageSquare, AlertTriangle, Inbox } from "lucide-react";
-import type { JiraIssue, Scope, TriageReport } from "@/types/triage";
+import { TrendChart } from "@/components/trend-chart";
+import { PriorityReview } from "@/components/priority-review";
+import { CheckCircle2, MessageSquare, AlertTriangle, Inbox, Clock } from "lucide-react";
+import type { JiraIssue, PriorityDecision, Scope, TriageReport } from "@/types/triage";
 import { SCOPE_LABELS, scopeHasP0 } from "@/types/triage";
 
 interface Props {
@@ -19,6 +21,7 @@ interface Props {
 export function DashboardView({ scope, title }: Props) {
   const [report, setReport] = useState<TriageReport | null>(null);
   const [issues, setIssues] = useState<JiraIssue[]>([]);
+  const [decisions, setDecisions] = useState<PriorityDecision[]>([]);
   const [jiraBaseUrl, setJiraBaseUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
@@ -29,11 +32,21 @@ export function DashboardView({ scope, title }: Props) {
       const data = await fetch(`/api/report?scope=${scope}`).then((r) => r.json());
       setReport(data.report);
       setIssues(data.issues ?? []);
+      setDecisions(data.decisions ?? []);
       setJiraBaseUrl(data.jiraBaseUrl ?? "");
     } finally {
       setLoading(false);
     }
   }, [scope]);
+
+  const refreshDecisions = useCallback(async () => {
+    try {
+      const ds = (await fetch("/api/priority-decisions").then((r) => r.json())) as PriorityDecision[];
+      setDecisions(Array.isArray(ds) ? ds : []);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -70,7 +83,9 @@ export function DashboardView({ scope, title }: Props) {
         <EmptyState loading={loading} scope={scope} />
       ) : (
         <div className="p-6 space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div
+            className={`grid grid-cols-2 ${scope === "eac" ? "md:grid-cols-5" : "md:grid-cols-4"} gap-3`}
+          >
             <Stat
               icon={<Inbox className="h-4 w-4" />}
               label="Tickets analyzed"
@@ -82,6 +97,18 @@ export function DashboardView({ scope, title }: Props) {
               value={report.ticketAnalyses.filter((a) => a.recommendation === "escalate").length}
               tone="danger"
             />
+            {scope === "eac" && (
+              <Stat
+                icon={<Clock className="h-4 w-4 text-danger" />}
+                label="Late on SLA"
+                value={
+                  report.ticketAnalyses.filter(
+                    (a) => a.slaStatus === "late" || a.slaStatus === "at-risk",
+                  ).length
+                }
+                tone="danger"
+              />
+            )}
             <Stat
               icon={<MessageSquare className="h-4 w-4 text-warning" />}
               label="Need a ping"
@@ -96,13 +123,30 @@ export function DashboardView({ scope, title }: Props) {
             />
           </div>
 
+          {scope === "eac" && report.trend && report.trend.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>30-day ticket trend</CardTitle>
+                <span className="text-[11px] text-fg-subtle">
+                  Created vs Resolved within the configured project
+                </span>
+              </CardHeader>
+              <CardBody>
+                <TrendChart data={report.trend} />
+              </CardBody>
+            </Card>
+          )}
+
           {scopeHasP0(scope) && (
             <section className="space-y-3">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold">P0 customers</h2>
+                <h2 className="text-sm font-semibold">White-glove customers</h2>
                 <span className="text-xs text-fg-muted">
                   {report.p0Summaries.length} tracked ·{" "}
-                  {report.p0Summaries.reduce((n, s) => n + s.openIssueKeys.length, 0)} tickets
+                  <WhiteGloveTicketsLink
+                    summaries={report.p0Summaries}
+                    jiraBaseUrl={jiraBaseUrl}
+                  />
                 </span>
               </div>
               {report.p0Summaries.length > 0 ? (
@@ -115,13 +159,13 @@ export function DashboardView({ scope, title }: Props) {
                 <Card>
                   <CardBody className="text-center text-fg-muted text-sm py-8 space-y-2">
                     <p>
-                      No P0 customers matched any open {SCOPE_LABELS[scope]} tickets yet.
+                      No white-glove customers matched any open {SCOPE_LABELS[scope]} tickets yet.
                     </p>
                     <p className="text-xs text-fg-subtle">
                       Either no customer&apos;s JQL fragment matches a {SCOPE_LABELS[scope]} ticket, or
-                      no P0 customers are configured on the{" "}
+                      no white-glove customers are configured on the{" "}
                       <a href="/p0" className="text-accent underline">
-                        P0 Customers
+                        White-glove Customers
                       </a>{" "}
                       page.
                     </p>
@@ -132,7 +176,11 @@ export function DashboardView({ scope, title }: Props) {
           )}
 
           <section>
-            <TriageTable rows={rows} onSelect={setSelected} />
+            <TriageTable
+              rows={rows}
+              onSelect={setSelected}
+              showSla={scope === "eac"}
+            />
           </section>
 
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -199,11 +247,47 @@ export function DashboardView({ scope, title }: Props) {
               </CardBody>
             </Card>
           </section>
+
+          {scope === "eac" && (
+            <PriorityReview
+              rows={rows}
+              decisions={decisions}
+              onSelect={setSelected}
+              onDecisionsChanged={refreshDecisions}
+            />
+          )}
         </div>
       )}
 
       <TicketDrawer issueKey={selected} onClose={() => setSelected(null)} />
     </div>
+  );
+}
+
+function WhiteGloveTicketsLink({
+  summaries,
+  jiraBaseUrl,
+}: {
+  summaries: TriageReport["p0Summaries"];
+  jiraBaseUrl: string;
+}) {
+  const allKeys = summaries.flatMap((s) => s.openIssueKeys);
+  const count = allKeys.length;
+  if (count === 0 || !jiraBaseUrl) {
+    return <>{count} tickets</>;
+  }
+  const jql = `key in (${allKeys.join(",")}) ORDER BY priority DESC, updated DESC`;
+  const href = `${jiraBaseUrl}/issues/?jql=${encodeURIComponent(jql)}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-accent hover:text-accent-hover underline decoration-accent/40 hover:decoration-accent"
+      title="Open all open white-glove customer tickets in JIRA"
+    >
+      {count} tickets
+    </a>
   );
 }
 
@@ -250,7 +334,7 @@ function EmptyState({ loading, scope }: { loading: boolean; scope: Scope }) {
           Configure the {SCOPE_LABELS[scope]} JQL in <span className="text-fg">Settings</span>
           {scopeHasP0(scope) && (
             <>
-              , add your <span className="text-fg">P0 customers</span>
+              , add your <span className="text-fg">white-glove customers</span>
             </>
           )}
           , then run <span className="text-fg">Sync {SCOPE_LABELS[scope]} from JIRA</span> to pull

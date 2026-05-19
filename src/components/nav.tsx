@@ -10,6 +10,7 @@ import {
   Activity,
   ClipboardList,
   ShieldAlert,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -26,7 +27,8 @@ const ALL_ITEMS: NavItem[] = [
   { href: "/", label: "Customer Dashboard", icon: LayoutDashboard, scope: "eac" },
   { href: "/fr", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
-  { href: "/p0", label: "P0 Customers", icon: Star },
+  { href: "/p0", label: "White-glove Customers", icon: Star },
+  { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -64,7 +66,7 @@ export function Nav() {
         <div className="h-7 w-7 rounded bg-accent/20 border border-accent/40 flex items-center justify-center">
           <Activity className="h-4 w-4 text-accent" />
         </div>
-        <div className="text-sm font-semibold">JIRA Analyzer</div>
+        <div className="text-sm font-semibold">JIRA Manager</div>
       </div>
       <nav className="flex-1 px-2 py-3 space-y-1">
         {items.map((item) => {

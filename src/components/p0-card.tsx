@@ -4,11 +4,11 @@ import { useState } from "react";
 import { Card, CardBody } from "@/components/ui/card";
 import { HealthBadge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
-import { cn } from "@/lib/utils";
-import type { P0Summary } from "@/types/triage";
-import { ChevronDown } from "lucide-react";
+import { cn, formatDate } from "@/lib/utils";
+import type { P0Summary, ResolvedTicketRef } from "@/types/triage";
+import { ChevronDown, ExternalLink } from "lucide-react";
 
-type Tab = "weekly" | "daily" | "plan";
+type Tab = "weekly" | "daily" | "plan" | "resolved";
 
 export function P0Card({
   summary,
@@ -21,8 +21,15 @@ export function P0Card({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<Tab>("weekly");
+  const resolvedTickets = summary.resolvedTickets ?? [];
   const body =
-    tab === "weekly" ? summary.weeklyProgress : tab === "daily" ? summary.dailyTracker : summary.resolutionPlan;
+    tab === "weekly"
+      ? summary.weeklyProgress
+      : tab === "daily"
+        ? summary.dailyTracker
+        : tab === "plan"
+          ? summary.resolutionPlan
+          : "";
   return (
     <Card className="overflow-hidden">
       <button
@@ -46,7 +53,9 @@ export function P0Card({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[11px] text-fg-subtle">
-            {summary.openIssueKeys.length} ticket{summary.openIssueKeys.length === 1 ? "" : "s"}
+            <span className="text-fg-muted">{summary.openIssueKeys.length}</span> open
+            <span className="mx-1.5 text-fg-subtle">·</span>
+            <span className="text-fg-muted">{resolvedTickets.length}</span> resolved
           </span>
           <HealthBadge health={summary.health} />
         </div>
@@ -54,29 +63,36 @@ export function P0Card({
 
       {open && (
         <>
-          <div className="flex gap-1 border-b border-border px-4 bg-bg-card">
-            {(["weekly", "daily", "plan"] as Tab[]).map((t) => (
+          <div className="flex gap-1 border-b border-border px-4 bg-bg-card overflow-x-auto scroll-thin">
+            {(
+              [
+                ["weekly", "Weekly progress"],
+                ["daily", "Daily tracker"],
+                ["plan", "Resolution plan"],
+                ["resolved", `Resolved tickets${resolvedTickets.length ? ` (${resolvedTickets.length})` : ""}`],
+              ] as [Tab, string][]
+            ).map(([t, label]) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
                 className={cn(
-                  "px-3 py-2 text-xs font-medium capitalize transition-colors -mb-[1px] border-b-2",
+                  "px-3 py-2 text-xs font-medium transition-colors -mb-[1px] border-b-2 whitespace-nowrap",
                   tab === t
                     ? "border-accent text-fg"
                     : "border-transparent text-fg-muted hover:text-fg",
                 )}
               >
-                {t === "weekly"
-                  ? "Weekly progress"
-                  : t === "daily"
-                    ? "Daily tracker"
-                    : "Resolution plan"}
+                {label}
               </button>
             ))}
           </div>
           <CardBody className="space-y-3">
-            <Markdown jiraBaseUrl={jiraBaseUrl}>{body}</Markdown>
-            {summary.blockers.length > 0 && tab !== "weekly" && (
+            {tab === "resolved" ? (
+              <ResolvedTicketsList tickets={resolvedTickets} jiraBaseUrl={jiraBaseUrl} />
+            ) : (
+              <Markdown jiraBaseUrl={jiraBaseUrl}>{body}</Markdown>
+            )}
+            {summary.blockers.length > 0 && tab !== "weekly" && tab !== "resolved" && (
               <div className="border-t border-border pt-3">
                 <div className="text-[11px] uppercase tracking-wide text-fg-subtle mb-1">
                   Blockers
@@ -92,5 +108,61 @@ export function P0Card({
         </>
       )}
     </Card>
+  );
+}
+
+function ResolvedTicketsList({
+  tickets,
+  jiraBaseUrl,
+}: {
+  tickets: ResolvedTicketRef[];
+  jiraBaseUrl?: string;
+}) {
+  if (tickets.length === 0) {
+    return (
+      <p className="text-sm text-fg-muted py-2">
+        No tickets resolved for this customer in the past 90 days.
+      </p>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border -mx-2">
+      {tickets.map((t) => {
+        const href = t.url || (jiraBaseUrl ? `${jiraBaseUrl}/browse/${t.key}` : undefined);
+        return (
+          <li key={t.key} className="px-2 py-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <div className="flex items-baseline gap-2 min-w-0">
+                {href ? (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-mono text-xs text-accent hover:text-accent-hover hover:underline shrink-0"
+                  >
+                    {t.key}
+                    <ExternalLink className="inline-block h-3 w-3 ml-0.5 -translate-y-px" />
+                  </a>
+                ) : (
+                  <span className="font-mono text-xs text-accent">{t.key}</span>
+                )}
+                <span className="text-sm text-fg-muted truncate">{t.summary}</span>
+              </div>
+              {t.resolved && (
+                <span className="text-[11px] text-fg-subtle font-mono whitespace-nowrap shrink-0">
+                  {formatDate(t.resolved)}
+                </span>
+              )}
+            </div>
+            {t.assignee && (
+              <div className="text-[10px] text-fg-subtle mt-0.5">
+                Resolved by{" "}
+                <span className="text-fg-muted">{t.assignee}</span>
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

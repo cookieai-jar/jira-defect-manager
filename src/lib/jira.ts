@@ -1,4 +1,4 @@
-import type { JiraIssue, JiraComment } from "@/types/triage";
+import type { JiraIssue, JiraComment, ResolvedTicketRef } from "@/types/triage";
 
 interface JiraEnv {
   baseUrl: string;
@@ -158,6 +158,99 @@ export async function searchIssues(jql: string, maxResults = 200): Promise<JiraI
     if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
     nextPageToken = res.nextPageToken;
   }
+  return out;
+}
+
+interface TrendIssue {
+  key: string;
+  created: string;
+  resolved: string | null;
+}
+
+/**
+ * Lightweight resolved-ticket fetch for white-glove customer tiles — pulls
+ * summary, resolutiondate, and assignee so we can render a compact list.
+ */
+export async function searchResolvedRefs(
+  jql: string,
+  maxResults = 500,
+): Promise<ResolvedTicketRef[]> {
+  const e = env();
+  const out: ResolvedTicketRef[] = [];
+  let nextPageToken: string | undefined;
+  const pageSize = Math.min(100, maxResults);
+  while (out.length < maxResults) {
+    const body: Record<string, unknown> = {
+      jql,
+      fields: ["summary", "resolutiondate", "assignee"],
+      maxResults: Math.min(pageSize, maxResults - out.length),
+    };
+    if (nextPageToken) body.nextPageToken = nextPageToken;
+    const res = await jiraFetch<{
+      issues: Array<{
+        key: string;
+        fields: {
+          summary: string;
+          resolutiondate: string | null;
+          assignee?: { displayName: string } | null;
+        };
+      }>;
+      nextPageToken?: string;
+      isLast?: boolean;
+    }>("/rest/api/3/search/jql", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    out.push(
+      ...res.issues.map((raw) => ({
+        key: raw.key,
+        summary: raw.fields.summary,
+        resolved: raw.fields.resolutiondate,
+        assignee: raw.fields.assignee?.displayName ?? null,
+        url: `${e.baseUrl}/browse/${raw.key}`,
+      })),
+    );
+    if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
+    nextPageToken = res.nextPageToken;
+  }
+  return out;
+}
+
+/**
+ * Lightweight search used for the trend chart — pulls only `created` and
+ * `resolutiondate` for each issue so trend math doesn't drag full payloads.
+ */
+export async function searchTrendKeys(jql: string, maxResults = 1000): Promise<TrendIssue[]> {
+  const e = env();
+  const out: TrendIssue[] = [];
+  let nextPageToken: string | undefined;
+  const pageSize = Math.min(100, maxResults);
+  while (out.length < maxResults) {
+    const body: Record<string, unknown> = {
+      jql,
+      fields: ["created", "resolutiondate"],
+      maxResults: Math.min(pageSize, maxResults - out.length),
+    };
+    if (nextPageToken) body.nextPageToken = nextPageToken;
+    const res = await jiraFetch<{
+      issues: Array<{ key: string; fields: { created: string; resolutiondate: string | null } }>;
+      nextPageToken?: string;
+      isLast?: boolean;
+    }>("/rest/api/3/search/jql", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    out.push(
+      ...res.issues.map((raw) => ({
+        key: raw.key,
+        created: raw.fields.created,
+        resolved: raw.fields.resolutiondate,
+      })),
+    );
+    if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
+    nextPageToken = res.nextPageToken;
+  }
+  void e;
   return out;
 }
 

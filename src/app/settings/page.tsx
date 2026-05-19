@@ -165,7 +165,7 @@ export default function SettingsPage() {
                   placeholder={`project = ${SCOPE_LABELS[s]} AND statusCategory != Done ORDER BY updated DESC`}
                 />
                 <p className="text-[11px] text-fg-subtle">
-                  {SCOPE_LABELS[s]} P0 customer JQL fragments will be AND&apos;d against this filter.
+                  {SCOPE_LABELS[s]} white-glove customer JQL fragments will be AND&apos;d against this filter.
                 </p>
               </div>
             </CardBody>

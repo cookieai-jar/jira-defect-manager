@@ -1,10 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, MessageSquare, XCircle, AlertTriangle } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  MessageSquare,
+  XCircle,
+  AlertTriangle,
+  Clock,
+  ArrowUpCircle,
+  ArrowDownCircle,
+} from "lucide-react";
 import { Badge, TempBadge } from "@/components/ui/badge";
 import { cn, daysSince } from "@/lib/utils";
-import type { JiraIssue, TicketAnalysis } from "@/types/triage";
+import type { JiraIssue, SlaStatus, TicketAnalysis } from "@/types/triage";
 
 type SortKey = "rank" | "severity" | "temperature" | "updated" | "key";
 
@@ -21,16 +30,27 @@ const RECOMMENDATION_STYLES: Record<TicketAnalysis["recommendation"], string> = 
   schedule: "border-accent/40 bg-accent/10 text-accent",
 };
 
+const SLA_STYLES: Record<SlaStatus, string> = {
+  "on-track": "border-success/40 bg-success/10 text-success",
+  "at-risk": "border-warning/40 bg-warning/10 text-warning",
+  late: "border-danger/40 bg-danger/10 text-danger",
+  "best-effort": "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted",
+};
+
 export function TriageTable({
   rows,
   onSelect,
+  showSla = false,
 }: {
   rows: Row[];
   onSelect: (key: string) => void;
+  showSla?: boolean;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [filter, setFilter] = useState<"all" | "p0" | "close" | "ping" | "escalate">("all");
+  const [filter, setFilter] = useState<
+    "all" | "p0" | "close" | "ping" | "escalate" | "late"
+  >("all");
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -43,6 +63,7 @@ export function TriageTable({
         (r) => r.recommendation === "ping-reporter" || r.recommendation === "ping-assignee",
       );
     if (filter === "escalate") list = list.filter((r) => r.recommendation === "escalate");
+    if (filter === "late") list = list.filter((r) => r.slaStatus === "late" || r.slaStatus === "at-risk");
     if (q.trim()) {
       const needle = q.toLowerCase();
       list = list.filter(
@@ -87,6 +108,9 @@ export function TriageTable({
         (r) => r.recommendation === "ping-reporter" || r.recommendation === "ping-assignee",
       ).length,
       escalate: rows.filter((r) => r.recommendation === "escalate").length,
+      late: rows.filter(
+        (r) => r.slaStatus === "late" || r.slaStatus === "at-risk",
+      ).length,
     }),
     [rows],
   );
@@ -108,7 +132,7 @@ export function TriageTable({
             All <span className="text-fg-subtle">· {counts.all}</span>
           </FilterChip>
           <FilterChip active={filter === "p0"} onClick={() => setFilter("p0")}>
-            P0 customers <span className="text-fg-subtle">· {counts.p0}</span>
+            White-glove <span className="text-fg-subtle">· {counts.p0}</span>
           </FilterChip>
           <FilterChip active={filter === "escalate"} onClick={() => setFilter("escalate")}>
             <AlertTriangle className="h-3 w-3" /> Escalate <span className="text-fg-subtle">· {counts.escalate}</span>
@@ -119,6 +143,11 @@ export function TriageTable({
           <FilterChip active={filter === "close"} onClick={() => setFilter("close")}>
             <XCircle className="h-3 w-3" /> Close <span className="text-fg-subtle">· {counts.close}</span>
           </FilterChip>
+          {showSla && (
+            <FilterChip active={filter === "late"} onClick={() => setFilter("late")}>
+              <Clock className="h-3 w-3" /> Late SLA <span className="text-fg-subtle">· {counts.late}</span>
+            </FilterChip>
+          )}
         </div>
         <div className="ml-auto">
           <input
@@ -139,6 +168,12 @@ export function TriageTable({
               <Th onClick={() => clickSort("severity")} active={sortKey === "severity"} dir={sortDir}>Sev</Th>
               <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
               <th className="px-3 py-2 text-left font-medium">Recommendation</th>
+              {showSla && (
+                <>
+                  <th className="px-3 py-2 text-left font-medium">SLA</th>
+                  <th className="px-3 py-2 text-left font-medium">Pri</th>
+                </>
+              )}
               <Th onClick={() => clickSort("updated")} active={sortKey === "updated"} dir={sortDir}>Updated</Th>
             </tr>
           </thead>
@@ -177,6 +212,22 @@ export function TriageTable({
                     {r.recommendation}
                   </Badge>
                 </td>
+                {showSla && (
+                  <>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {r.slaStatus ? (
+                        <Badge className={cn("border", SLA_STYLES[r.slaStatus])}>
+                          {r.slaStatus}
+                        </Badge>
+                      ) : (
+                        <span className="text-fg-subtle text-xs">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <PriorityCell r={r} />
+                    </td>
+                  </>
+                )}
                 <td className="px-3 py-2 text-xs text-fg-muted whitespace-nowrap">
                   {daysSince(r.issue.updated)}d ago
                 </td>
@@ -184,7 +235,7 @@ export function TriageTable({
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-fg-muted text-sm">
+                <td colSpan={showSla ? 9 : 7} className="px-3 py-8 text-center text-fg-muted text-sm">
                   No tickets match the current filter.
                 </td>
               </tr>
@@ -192,6 +243,35 @@ export function TriageTable({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function PriorityCell({ r }: { r: Row }) {
+  if (!r.currentPriority && !r.recommendedPriority) {
+    return <span className="text-fg-subtle text-xs">—</span>;
+  }
+  const change = r.priorityChange;
+  return (
+    <div className="flex items-center gap-1 text-xs">
+      <span className="font-mono text-fg-muted">{r.currentPriority ?? "?"}</span>
+      {change && change !== "keep" && (
+        <>
+          {change === "raise" ? (
+            <ArrowUpCircle className="h-3 w-3 text-danger" />
+          ) : (
+            <ArrowDownCircle className="h-3 w-3 text-success" />
+          )}
+          <span
+            className={cn(
+              "font-mono font-semibold",
+              change === "raise" ? "text-danger" : "text-success",
+            )}
+          >
+            {r.recommendedPriority}
+          </span>
+        </>
+      )}
     </div>
   );
 }

@@ -7,9 +7,17 @@ import type {
   AppConfig,
   TemperatureBand,
   Scope,
+  ResolvedTicketRef,
 } from "@/types/triage";
 import { defaultModel, jsonCompletion } from "./anthropic";
 import { daysSince } from "./utils";
+import {
+  PRIORITY_DEFINITIONS,
+  computeSlaStatus,
+  priorityChangeFor,
+  priorityFromString,
+  slaTargetDate,
+} from "./priority";
 
 const TEMP_BANDS: TemperatureBand[] = ["cold", "cool", "warm", "hot", "critical"];
 
@@ -53,6 +61,13 @@ function compactIssue(issue: JiraIssue): string {
 }
 
 const TICKET_SYSTEM_EAC = `You are a customer-success-focused engineering manager triaging JIRA bug/support tickets.
+
+PRIORITY DEFINITIONS (use these to evaluate every ticket):
+- P0: ${PRIORITY_DEFINITIONS.P0.impact} SLA: ${PRIORITY_DEFINITIONS.P0.sla}
+- P1: ${PRIORITY_DEFINITIONS.P1.impact} SLA: ${PRIORITY_DEFINITIONS.P1.sla}
+- P2: ${PRIORITY_DEFINITIONS.P2.impact} SLA: ${PRIORITY_DEFINITIONS.P2.sla}
+- P3: ${PRIORITY_DEFINITIONS.P3.impact} SLA: ${PRIORITY_DEFINITIONS.P3.sla}
+
 For each ticket, output one JSON object with these fields:
 
 - issueKey: string (echo)
@@ -73,9 +88,11 @@ For each ticket, output one JSON object with these fields:
    * "continue" — work is progressing, no intervention needed.
    * "schedule" — needs to be planned into a sprint.
 - rationale: 1-2 sentences explaining the recommendation. Reference specific signals.
-- nextStep: One concrete action the EM should take this week.
+- nextStep: One concrete action the EM should take this week, aligned with the recommended priority's SLA window.
 - suggestedSprint: 1 (this sprint), 2 (next sprint), or null (backlog / longer).
 - evidenceQuotes: array of 0-3 short verbatim quotes (<=140 chars each) from comments that justify the temperature read. Empty array if no comments.
+- recommendedPriority: one of "P0" | "P1" | "P2" | "P3" — the priority the ticket SHOULD be at based on the definitions above and what the ticket actually describes. Read the description, comments, severity, and workaround availability to choose.
+- priorityRationale: 1 short sentence (<=180 chars) explaining why the recommended priority is appropriate. Reference concrete signals from the ticket.
 
 Return ONLY a JSON array of these objects inside a \`\`\`json fence. No prose.`;
 
@@ -152,15 +169,26 @@ interface RawTicketAnalysis {
   nextStep: string;
   suggestedSprint: 1 | 2 | null;
   evidenceQuotes: string[];
+  recommendedPriority?: string | null;
+  priorityRationale?: string;
 }
 
 async function analyzeBatch(
   batch: JiraIssue[],
   model: string,
   p0Names: Set<string>,
+  p0Customers: P0Customer[],
   scope: Scope,
 ): Promise<TicketAnalysis[]> {
-  const user = `Analyze the following ${batch.length} JIRA ${scope === "fr" ? "feature request" : "support"} tickets. Today is ${new Date().toISOString().slice(0, 10)}.
+  const whiteGloveContext =
+    p0Customers.length > 0
+      ? `\n\nKNOWN WHITE-GLOVE CUSTOMERS — when the ticket relates to one of these accounts (based on Customer field references, account names in comments/description/labels, or the JQL hints below), set "customer" to the EXACT canonical name from the list. Otherwise return your best-effort customer name or null.
+
+${p0Customers
+  .map((c) => `- "${c.name}" — JQL hint: ${c.jqlFragment}`)
+  .join("\n")}`
+      : "";
+  const user = `Analyze the following ${batch.length} JIRA ${scope === "fr" ? "feature request" : "support"} tickets. Today is ${new Date().toISOString().slice(0, 10)}.${whiteGloveContext}
 
 ${batch.map((i) => compactIssue(i)).join("\n---\n")}`;
 
@@ -177,6 +205,15 @@ ${batch.map((i) => compactIssue(i)).join("\n---\n")}`;
     const sev = clamp(r?.severityScore ?? 5, 1, 10);
     const tempScore = clamp(r?.temperatureScore ?? 5, 1, 10);
     const customer = r?.customer ?? null;
+    const currentPriority = priorityFromString(issue.priority);
+    const recommendedPriority =
+      scope === "eac" ? priorityFromString(r?.recommendedPriority ?? null) : null;
+    const priorityChange =
+      scope === "eac" ? priorityChangeFor(currentPriority, recommendedPriority) : null;
+    const slaStatus =
+      scope === "eac" ? computeSlaStatus(currentPriority, issue.created) : null;
+    const slaTarget =
+      scope === "eac" ? slaTargetDate(currentPriority, issue.created) : null;
     return {
       issueKey: issue.key,
       severityScore: sev,
@@ -191,6 +228,12 @@ ${batch.map((i) => compactIssue(i)).join("\n---\n")}`;
       nextStep: r?.nextStep ?? "",
       suggestedSprint: r?.suggestedSprint ?? null,
       evidenceQuotes: (r?.evidenceQuotes ?? []).slice(0, 3),
+      currentPriority,
+      recommendedPriority,
+      priorityChange,
+      priorityRationale: r?.priorityRationale ?? "",
+      slaStatus,
+      slaTargetDate: slaTarget,
     };
   });
 }
@@ -211,7 +254,7 @@ function asMarkdown(v: unknown): string {
   return String(v);
 }
 
-const P0_SYSTEM_EAC = `You are an engineering manager writing the weekly status update for a P0 customer.
+const P0_SYSTEM_EAC = `You are an engineering manager writing the weekly status update for a white-glove customer (a hand-picked priority account).
 Given the customer's open JIRA support tickets, write a focused, factual status doc.
 
 CRITICAL RULES:
@@ -252,7 +295,7 @@ Output one JSON object with these fields, all in GitHub-flavored markdown:
 
 Return ONLY the JSON inside a \`\`\`json fence.`;
 
-const P0_SYSTEM_FR = `You are a product manager writing the weekly DELIVERY STATUS for a P0 customer's open feature requests (FRs).
+const P0_SYSTEM_FR = `You are a product manager writing the weekly DELIVERY STATUS for a white-glove customer's open feature requests (FRs).
 These are customer-driven product asks, not bugs. Frame everything around product delivery (PRD, scoping, design, engineering, roadmap) — NOT bug triage.
 
 CRITICAL RULES:
@@ -429,8 +472,8 @@ export async function runAnalysis(
   config: AppConfig,
   scope: Scope,
   onProgress?: (event: { phase: string; done: number; total: number }) => void,
-  /** Map of issue key -> authoritative P0 customer name (from JQL fragment match). */
-  p0TicketMap: Map<string, string> = new Map(),
+  /** Resolved tickets per white-glove customer name, pre-matched by the sync layer. */
+  p0ResolvedMap: Map<string, ResolvedTicketRef[]> = new Map(),
 ): Promise<TriageReport> {
   const model = config.model || defaultModel();
   const p0NameSet = new Set(p0Customers.map((c) => c.name.toLowerCase().trim()));
@@ -453,7 +496,7 @@ export async function runAnalysis(
     while (true) {
       const idx = nextIndex++;
       if (idx >= batches.length) return;
-      const res = await analyzeBatch(batches[idx], model, p0NameSet, scope);
+      const res = await analyzeBatch(batches[idx], model, p0NameSet, p0Customers, scope);
       ticketAnalyses.push(...res);
       finished++;
       onProgress?.({ phase: "tickets", done: finished, total: batches.length });
@@ -462,12 +505,19 @@ export async function runAnalysis(
   for (let i = 0; i < Math.min(PARALLEL, batches.length); i++) inFlight.push(worker());
   await Promise.all(inFlight);
 
-  // Override Claude's customer inference with the authoritative JQL-fragment match.
+  // Canonicalize Claude's customer attribution against the configured
+  // white-glove names. We trust Claude to assign the right account from the
+  // canonical list provided in the prompt; this step just normalizes casing
+  // and sets isP0Customer accordingly.
+  const wgByLowerName = new Map<string, P0Customer>();
+  for (const c of p0Customers) wgByLowerName.set(c.name.toLowerCase().trim(), c);
   for (const a of ticketAnalyses) {
-    const authoritative = p0TicketMap.get(a.issueKey);
-    if (authoritative) {
-      a.customer = authoritative;
-      a.isP0Customer = true;
+    if (a.customer) {
+      const wg = wgByLowerName.get(a.customer.toLowerCase().trim());
+      if (wg) {
+        a.customer = wg.name;
+        a.isP0Customer = true;
+      }
     }
   }
 
@@ -479,16 +529,19 @@ export async function runAnalysis(
   onProgress?.({ phase: "p0", done: 0, total: p0Customers.length });
   for (let i = 0; i < p0Customers.length; i++) {
     const customer = p0Customers[i];
-    const matchedKeys = new Set<string>();
-    for (const [issueKey, name] of p0TicketMap) {
-      if (name === customer.name) matchedKeys.add(issueKey);
-    }
     const matched = ticketAnalyses
-      .filter((a) => matchedKeys.has(a.issueKey) && a.status !== "resolved")
+      .filter(
+        (a) =>
+          a.customer &&
+          a.customer.toLowerCase().trim() === customer.name.toLowerCase().trim() &&
+          a.status !== "resolved",
+      )
       .map((a) => issuesByKey.get(a.issueKey))
       .filter((x): x is JiraIssue => Boolean(x));
+    const resolvedTickets = p0ResolvedMap.get(customer.name) ?? [];
     try {
       const summary = await summarizeP0(customer, matched, model, scope);
+      summary.resolvedTickets = resolvedTickets;
       p0Summaries.push(summary);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -499,6 +552,7 @@ export async function runAnalysis(
         dailyTracker: "_unavailable — see error above_",
         resolutionPlan: "_unavailable — see error above_",
         openIssueKeys: matched.map((m) => m.key),
+        resolvedTickets,
         blockers: [],
         health: "yellow",
         generatedAt: new Date().toISOString(),

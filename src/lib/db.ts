@@ -7,6 +7,9 @@ import type {
   TriageReport,
   TicketAnalysis,
   Scope,
+  PriorityDecision,
+  Priority,
+  PriorityChange,
 } from "@/types/triage";
 
 const DATA_DIR = join(process.cwd(), "data");
@@ -76,6 +79,18 @@ export function db(): DatabaseSync {
       issues_pulled INTEGER DEFAULT 0,
       issues_analyzed INTEGER DEFAULT 0,
       error TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS priority_decisions (
+      issue_key TEXT PRIMARY KEY,
+      decision TEXT NOT NULL,
+      decided_at TEXT NOT NULL,
+      decided_priority_change TEXT,
+      decided_recommended_priority TEXT,
+      decided_current_priority TEXT,
+      decided_ticket_updated_at TEXT,
+      revisit_flagged INTEGER NOT NULL DEFAULT 0,
+      revisit_reason TEXT
     );
   `);
 
@@ -243,6 +258,89 @@ export function recordSyncFinish(
   db().prepare(
     `UPDATE sync_runs SET finished_at = CURRENT_TIMESTAMP, status = ?, issues_pulled = ?, issues_analyzed = ?, error = ? WHERE id = ?`,
   ).run(status, pulled, analyzed, error, id);
+}
+
+interface DecisionRow {
+  issue_key: string;
+  decision: string;
+  decided_at: string;
+  decided_priority_change: string | null;
+  decided_recommended_priority: string | null;
+  decided_current_priority: string | null;
+  decided_ticket_updated_at: string | null;
+  revisit_flagged: number;
+  revisit_reason: string | null;
+}
+
+function rowToDecision(r: DecisionRow): PriorityDecision {
+  return {
+    issueKey: r.issue_key,
+    decision: "ignore",
+    decidedAt: r.decided_at,
+    decidedPriorityChange: (r.decided_priority_change as PriorityChange | null) ?? null,
+    decidedRecommendedPriority: (r.decided_recommended_priority as Priority | null) ?? null,
+    decidedCurrentPriority: (r.decided_current_priority as Priority | null) ?? null,
+    decidedTicketUpdatedAt: r.decided_ticket_updated_at,
+    revisitFlagged: r.revisit_flagged === 1,
+    revisitReason: r.revisit_reason,
+  };
+}
+
+export function listDecisions(): PriorityDecision[] {
+  const rows = db()
+    .prepare(`SELECT * FROM priority_decisions ORDER BY decided_at DESC`)
+    .all() as unknown as DecisionRow[];
+  return rows.map(rowToDecision);
+}
+
+export function getDecision(issueKey: string): PriorityDecision | null {
+  const row = db()
+    .prepare(`SELECT * FROM priority_decisions WHERE issue_key = ?`)
+    .get(issueKey) as unknown as DecisionRow | undefined;
+  return row ? rowToDecision(row) : null;
+}
+
+export function upsertDecision(d: PriorityDecision) {
+  db()
+    .prepare(
+      `INSERT INTO priority_decisions (
+        issue_key, decision, decided_at, decided_priority_change,
+        decided_recommended_priority, decided_current_priority,
+        decided_ticket_updated_at, revisit_flagged, revisit_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(issue_key) DO UPDATE SET
+        decision = excluded.decision,
+        decided_at = excluded.decided_at,
+        decided_priority_change = excluded.decided_priority_change,
+        decided_recommended_priority = excluded.decided_recommended_priority,
+        decided_current_priority = excluded.decided_current_priority,
+        decided_ticket_updated_at = excluded.decided_ticket_updated_at,
+        revisit_flagged = excluded.revisit_flagged,
+        revisit_reason = excluded.revisit_reason`,
+    )
+    .run(
+      d.issueKey,
+      d.decision,
+      d.decidedAt,
+      d.decidedPriorityChange,
+      d.decidedRecommendedPriority,
+      d.decidedCurrentPriority,
+      d.decidedTicketUpdatedAt,
+      d.revisitFlagged ? 1 : 0,
+      d.revisitReason,
+    );
+}
+
+export function deleteDecision(issueKey: string) {
+  db().prepare(`DELETE FROM priority_decisions WHERE issue_key = ?`).run(issueKey);
+}
+
+export function clearRevisitFlag(issueKey: string) {
+  db()
+    .prepare(
+      `UPDATE priority_decisions SET revisit_flagged = 0, revisit_reason = NULL WHERE issue_key = ?`,
+    )
+    .run(issueKey);
 }
 
 export function latestSyncRun(scope: Scope) {

@@ -1,5 +1,23 @@
 export type TemperatureBand = "cold" | "cool" | "warm" | "hot" | "critical";
 
+export type Priority = "P0" | "P1" | "P2" | "P3";
+export type SlaStatus = "on-track" | "at-risk" | "late" | "best-effort";
+export type PriorityChange = "raise" | "lower" | "keep";
+
+export interface PriorityDecision {
+  issueKey: string;
+  decision: "ignore";
+  decidedAt: string;
+  /** Snapshot at the time of the decision — used to detect drift on the next sync. */
+  decidedPriorityChange: PriorityChange | null;
+  decidedRecommendedPriority: Priority | null;
+  decidedCurrentPriority: Priority | null;
+  /** JIRA issue.updated when the user made the decision. */
+  decidedTicketUpdatedAt: string | null;
+  revisitFlagged: boolean;
+  revisitReason: string | null;
+}
+
 export type Scope = "eac" | "fr" | "sec";
 
 export const SCOPES: readonly Scope[] = ["eac", "fr", "sec"] as const;
@@ -81,6 +99,21 @@ export interface TicketAnalysis {
   nextStep: string;
   suggestedSprint: 1 | 2 | null; // null = backlog / longer than 2 sprints
   evidenceQuotes: string[];      // short quotes pulled from comments backing the temperature read
+  // EAC-only priority & SLA analysis. Other scopes leave these null.
+  currentPriority?: Priority | null;
+  recommendedPriority?: Priority | null;
+  priorityChange?: PriorityChange | null;
+  priorityRationale?: string;
+  slaStatus?: SlaStatus | null;
+  slaTargetDate?: string | null; // ISO date when SLA fix window closes
+}
+
+export interface ResolvedTicketRef {
+  key: string;
+  summary: string;
+  resolved: string | null;
+  assignee: string | null;
+  url: string;
 }
 
 export interface P0Summary {
@@ -89,9 +122,16 @@ export interface P0Summary {
   dailyTracker: string;          // markdown
   resolutionPlan: string;        // markdown
   openIssueKeys: string[];
+  resolvedTickets?: ResolvedTicketRef[];
   blockers: string[];
   health: "green" | "yellow" | "red";
   generatedAt: string;
+}
+
+export interface TrendBucket {
+  date: string;      // YYYY-MM-DD (UTC)
+  created: number;
+  resolved: number;
 }
 
 export interface TriageReport {
@@ -100,4 +140,5 @@ export interface TriageReport {
   ticketAnalyses: TicketAnalysis[];
   closeCandidates: string[];     // issue keys
   pingCandidates: { issueKey: string; target: "reporter" | "assignee" }[];
+  trend?: TrendBucket[];
 }

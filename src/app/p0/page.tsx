@@ -46,7 +46,7 @@ export default function P0Page() {
       <header className="px-6 h-14 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Star className="h-4 w-4 text-warning" />
-          <h1 className="text-lg font-semibold">P0 Customers</h1>
+          <h1 className="text-lg font-semibold">White-glove Customers</h1>
           <span className="text-xs text-fg-muted">{list.length} configured</span>
         </div>
         <span className="text-[11px] text-fg-subtle">
@@ -57,7 +57,7 @@ export default function P0Page() {
       <div className="p-6 space-y-6 max-w-4xl">
         <Card>
           <CardHeader>
-            <CardTitle>Add a P0 customer</CardTitle>
+            <CardTitle>Add a white-glove customer</CardTitle>
             <span className="text-[11px] text-fg-subtle">
               Daily tracking + weekly summary will be generated for each dashboard
             </span>
@@ -105,7 +105,7 @@ export default function P0Page() {
         ) : list.length === 0 ? (
           <Card>
             <CardBody className="text-center text-fg-muted text-sm py-10">
-              No P0 customers yet. Add your first above.
+              No white-glove customers yet. Add your first above.
             </CardBody>
           </Card>
         ) : (
@@ -145,7 +145,7 @@ function P0Row({ customer, onChanged }: { customer: P0Customer; onChanged: () =>
   }
 
   async function remove() {
-    if (!confirm(`Remove "${customer.name}" from P0 list?`)) return;
+    if (!confirm(`Remove "${customer.name}" from white-glove customer list?`)) return;
     await fetch(`/api/p0/${customer.id}`, { method: "DELETE" });
     onChanged();
   }

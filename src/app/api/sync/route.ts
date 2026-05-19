@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
-import { searchIssues } from "@/lib/jira";
+import { searchIssues, searchResolvedRefs } from "@/lib/jira";
 import { runAnalysis } from "@/lib/analysis";
+import { computeTrend } from "@/lib/trend";
+import { stripDynamicClauses, extractMatchTokens } from "@/lib/jql";
+import type { ResolvedTicketRef } from "@/types/triage";
 import {
   saveIssue,
   saveAnalysis,
@@ -9,6 +12,8 @@ import {
   recordSyncFinish,
   listP0,
   upsertP0,
+  listDecisions,
+  upsertDecision,
 } from "@/lib/db";
 import { getConfig } from "@/lib/config";
 import {
@@ -63,44 +68,45 @@ async function runSync(scope: Scope) {
       message: `Pulled ${issues.length} issues`,
     });
 
-    // For each P0 customer, pull the authoritative set of tickets via
-    // (masterJql) AND (jqlFragment). This is the user's source of truth for
-    // which tickets belong to which P0 — overriding any model inference.
-    const issueMap = new Map(issues.map((i) => [i.key, i]));
-    const p0TicketMap = new Map<string, string>();
-    const masterCore = masterJql.replace(/\s+ORDER\s+BY\s+.*$/i, "").trim();
-    for (let i = 0; i < p0.length; i++) {
-      const customer = p0[i];
-      setSyncState(scope, {
-        phase: "jira",
-        message: `Matching P0 customer ${i + 1}/${p0.length}: ${customer.name}`,
-        done: i,
-        total: p0.length,
-      });
+    // Recently-resolved tickets for the scope — one query, NOT per white-glove
+    // customer. We bucket them locally to each customer using the literal
+    // values from their JQL fragments.
+    const p0ResolvedMap = new Map<string, ResolvedTicketRef[]>();
+    if (scopeHasP0(scope) && p0.length > 0) {
       try {
-        const jql = `(${masterCore}) AND (${customer.jqlFragment})`;
-        const matched = await searchIssues(jql, 500);
-        for (const m of matched) {
-          if (!issueMap.has(m.key)) {
-            issueMap.set(m.key, m);
-            saveIssue(scope, m);
-          }
-          p0TicketMap.set(m.key, customer.name);
+        setSyncState(scope, {
+          phase: "jira",
+          message: "Pulling recently-resolved tickets for the scope",
+        });
+        const resolvedBase =
+          stripDynamicClauses(masterJql) ||
+          masterJql.replace(/\s+ORDER\s+BY\s+.*$/i, "").trim();
+        const resolvedJql = `(${resolvedBase}) AND statusCategory = Done AND resolutiondate >= -90d ORDER BY resolutiondate DESC`;
+        const allResolved = await searchResolvedRefs(resolvedJql, 1000);
+        // Bucket resolved tickets to white-glove customers via literal token
+        // matching in summary. Tokens come from the customer's JQL fragment
+        // (e.g. for `"Customer[X]" in ("JPMorgan Chase (JPMC)")`, the token
+        // "JPMorgan Chase (JPMC)" is matched against ticket summaries).
+        for (const customer of p0) {
+          const tokens = [
+            customer.name,
+            ...extractMatchTokens(customer.jqlFragment),
+          ].map((t) => t.toLowerCase());
+          const matched = allResolved.filter((t) => {
+            const hay = t.summary.toLowerCase();
+            return tokens.some((tok) => tok.length > 1 && hay.includes(tok));
+          });
+          p0ResolvedMap.set(customer.name, matched);
         }
       } catch (err) {
         console.warn(
-          `P0 customer "${customer.name}" JQL fragment failed:`,
+          `[sync] resolved-tickets fetch failed:`,
           err instanceof Error ? err.message : err,
         );
       }
     }
-    const enrichedIssues = Array.from(issueMap.values());
-    setSyncState(scope, {
-      issuesPulled: enrichedIssues.length,
-      message: `Pulled ${enrichedIssues.length} issues (${p0TicketMap.size} mapped to P0 customers)`,
-    });
 
-    if (enrichedIssues.length === 0) {
+    if (issues.length === 0) {
       saveReport(scope, {
         generatedAt: new Date().toISOString(),
         p0Summaries: [],
@@ -114,7 +120,7 @@ async function runSync(scope: Scope) {
     }
 
     const report = await runAnalysis(
-      enrichedIssues,
+      issues,
       p0,
       config,
       scope,
@@ -126,13 +132,85 @@ async function runSync(scope: Scope) {
           message:
             event.phase === "tickets"
               ? `Analyzing ticket batches (${event.done}/${event.total})`
-              : `Summarizing P0 customers (${event.done}/${event.total})`,
+              : `Summarizing white-glove customers (${event.done}/${event.total})`,
         });
       },
-      p0TicketMap,
+      p0ResolvedMap,
     );
 
     for (const a of report.ticketAnalyses) saveAnalysis(scope, a);
+
+    // Re-evaluate any previously-ignored priority decisions against the fresh
+    // analysis. If the recommendation has changed or the ticket has been
+    // updated since the decision (and there's still a non-keep change), flag
+    // it for revisit.
+    if (scope === "eac") {
+      try {
+        const decisions = listDecisions();
+        const analysisByKey = new Map(report.ticketAnalyses.map((a) => [a.issueKey, a]));
+        const issueByKey = new Map(issues.map((i) => [i.key, i]));
+        for (const d of decisions) {
+          const a = analysisByKey.get(d.issueKey);
+          const i = issueByKey.get(d.issueKey);
+          if (!a || !i) continue;
+          const reasons: string[] = [];
+          if (
+            d.decidedRecommendedPriority &&
+            a.recommendedPriority &&
+            d.decidedRecommendedPriority !== a.recommendedPriority
+          ) {
+            reasons.push(
+              `Recommendation changed from ${d.decidedRecommendedPriority} → ${a.recommendedPriority}`,
+            );
+          }
+          if (
+            d.decidedCurrentPriority &&
+            a.currentPriority &&
+            d.decidedCurrentPriority !== a.currentPriority
+          ) {
+            reasons.push(
+              `Current priority changed from ${d.decidedCurrentPriority} → ${a.currentPriority}`,
+            );
+          }
+          if (
+            d.decidedTicketUpdatedAt &&
+            i.updated > d.decidedTicketUpdatedAt &&
+            a.priorityChange &&
+            a.priorityChange !== "keep"
+          ) {
+            reasons.push(
+              `Ticket updated on ${i.updated.slice(0, 10)} since decision; recommendation is still "${a.priorityChange}"`,
+            );
+          }
+          const shouldFlag = reasons.length > 0;
+          if (shouldFlag !== d.revisitFlagged || (shouldFlag && reasons.join("; ") !== d.revisitReason)) {
+            upsertDecision({
+              ...d,
+              revisitFlagged: shouldFlag,
+              revisitReason: shouldFlag ? reasons.join("; ") : null,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          `[sync] revisit evaluation failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // Trend chart: extra JIRA query to capture created + resolved counts over
+    // the past 30 days. Best-effort — failure shouldn't kill the sync.
+    try {
+      setSyncState(scope, { message: "Building trend chart", done: 0, total: 1 });
+      report.trend = await computeTrend(masterJql, 30);
+    } catch (err) {
+      console.warn(
+        `[sync] trend computation failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     saveReport(scope, report);
 
     const now = new Date().toISOString();
@@ -140,7 +218,7 @@ async function runSync(scope: Scope) {
       upsertP0({ ...customer, lastAnalyzedAt: now });
     }
 
-    recordSyncFinish(runId, "success", enrichedIssues.length, report.ticketAnalyses.length);
+    recordSyncFinish(runId, "success", issues.length, report.ticketAnalyses.length);
     setSyncState(scope, {
       issuesAnalyzed: report.ticketAnalyses.length,
       message: `Analyzed ${report.ticketAnalyses.length} tickets`,

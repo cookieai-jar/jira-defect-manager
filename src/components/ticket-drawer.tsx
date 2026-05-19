@@ -5,7 +5,9 @@ import { X, ExternalLink, Loader2 } from "lucide-react";
 import type { JiraIssue, TicketAnalysis } from "@/types/triage";
 import { TempBadge, Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { formatDate, daysSince } from "@/lib/utils";
+import { formatDate, daysSince, cn } from "@/lib/utils";
+import type { SlaStatus } from "@/types/triage";
+import { ArrowUpCircle, ArrowDownCircle, Clock } from "lucide-react";
 
 interface Props {
   issueKey: string | null;
@@ -129,6 +131,74 @@ export function TicketDrawer({ issueKey, onClose }: Props) {
                 </section>
               )}
 
+              {data.analysis &&
+                (data.analysis.recommendedPriority || data.analysis.slaStatus) && (
+                  <section className="space-y-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+                      Priority &amp; SLA
+                    </h3>
+                    <div className="rounded border border-border bg-bg-card p-3 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {data.analysis.currentPriority && (
+                          <Badge>
+                            Current:{" "}
+                            <span className="font-mono ml-0.5">
+                              {data.analysis.currentPriority}
+                            </span>
+                          </Badge>
+                        )}
+                        {data.analysis.recommendedPriority &&
+                          data.analysis.priorityChange &&
+                          data.analysis.priorityChange !== "keep" && (
+                            <Badge
+                              className={cn(
+                                "border",
+                                data.analysis.priorityChange === "raise"
+                                  ? "border-danger/40 bg-danger/10 text-danger"
+                                  : "border-success/40 bg-success/10 text-success",
+                              )}
+                            >
+                              {data.analysis.priorityChange === "raise" ? (
+                                <ArrowUpCircle className="h-3 w-3" />
+                              ) : (
+                                <ArrowDownCircle className="h-3 w-3" />
+                              )}
+                              {data.analysis.priorityChange === "raise"
+                                ? "Raise to"
+                                : "Lower to"}{" "}
+                              <span className="font-mono ml-0.5">
+                                {data.analysis.recommendedPriority}
+                              </span>
+                            </Badge>
+                          )}
+                        {data.analysis.priorityChange === "keep" && (
+                          <Badge className="border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted border">
+                            Priority OK
+                          </Badge>
+                        )}
+                        {data.analysis.slaStatus && (
+                          <Badge className={cn("border", SLA_BADGE_STYLES[data.analysis.slaStatus])}>
+                            <Clock className="h-3 w-3" />
+                            SLA: {data.analysis.slaStatus}
+                          </Badge>
+                        )}
+                      </div>
+                      {data.analysis.priorityRationale && (
+                        <p className="text-sm text-fg">{data.analysis.priorityRationale}</p>
+                      )}
+                      {data.analysis.slaTargetDate && (
+                        <p className="text-xs text-fg-muted">
+                          SLA target: <span className="font-mono">{formatDate(data.analysis.slaTargetDate)}</span>
+                          {" · "}
+                          <span>
+                            Ticket age: {daysSince(data.issue.created)}d
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                )}
+
               {data.issue.description && (
                 <section className="space-y-2">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
@@ -166,6 +236,13 @@ export function TicketDrawer({ issueKey, onClose }: Props) {
     </div>
   );
 }
+
+const SLA_BADGE_STYLES: Record<SlaStatus, string> = {
+  "on-track": "border-success/40 bg-success/10 text-success",
+  "at-risk": "border-warning/40 bg-warning/10 text-warning",
+  late: "border-danger/40 bg-danger/10 text-danger",
+  "best-effort": "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted",
+};
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
