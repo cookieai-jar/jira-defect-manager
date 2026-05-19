@@ -2,17 +2,62 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings, Star, Activity } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  LayoutDashboard,
+  Settings,
+  Star,
+  Activity,
+  ClipboardList,
+  ShieldAlert,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { AppConfig, Scope } from "@/types/triage";
 
-const ITEMS = [
-  { href: "/", label: "EAC Dashboard", icon: LayoutDashboard },
+interface NavItem {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  /** If set, the item is shown only when config.dashboards[scope] is true. */
+  scope?: Scope;
+}
+
+const ALL_ITEMS: NavItem[] = [
+  { href: "/", label: "Customer Dashboard", icon: LayoutDashboard, scope: "eac" },
+  { href: "/fr", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
+  { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
   { href: "/p0", label: "P0 Customers", icon: Star },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Nav() {
   const pathname = usePathname();
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    function refetch() {
+      fetch("/api/config")
+        .then((r) => r.json())
+        .then((c: AppConfig) => {
+          if (!cancelled) setConfig(c);
+        })
+        .catch(() => {});
+    }
+    refetch();
+    window.addEventListener("app-config-changed", refetch);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("app-config-changed", refetch);
+    };
+  }, [pathname]);
+
+  const items = ALL_ITEMS.filter((item) => {
+    if (!item.scope) return true;
+    if (!config) return true; // before config loads, show everything
+    return config.dashboards?.[item.scope] !== false;
+  });
+
   return (
     <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border bg-bg-muted">
       <div className="flex items-center gap-2 px-4 h-14 border-b border-border">
@@ -22,7 +67,7 @@ export function Nav() {
         <div className="text-sm font-semibold">JIRA Analyzer</div>
       </div>
       <nav className="flex-1 px-2 py-3 space-y-1">
-        {ITEMS.map((item) => {
+        {items.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
           return (

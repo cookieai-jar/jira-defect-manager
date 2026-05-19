@@ -1,7 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { JiraIssue, P0Customer, TriageReport, TicketAnalysis } from "@/types/triage";
+import type {
+  JiraIssue,
+  P0Customer,
+  TriageReport,
+  TicketAnalysis,
+  Scope,
+} from "@/types/triage";
 
 const DATA_DIR = join(process.cwd(), "data");
 mkdirSync(DATA_DIR, { recursive: true });
@@ -9,6 +15,18 @@ mkdirSync(DATA_DIR, { recursive: true });
 const DB_PATH = join(DATA_DIR, "triage.db");
 
 let _db: DatabaseSync | null = null;
+
+function hasColumn(conn: DatabaseSync, table: string, column: string): boolean {
+  const rows = conn.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((r) => r.name === column);
+}
+
+function tableExists(conn: DatabaseSync, table: string): boolean {
+  const row = conn
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+    .get(table);
+  return !!row;
+}
 
 export function db(): DatabaseSync {
   if (_db) return _db;
@@ -60,19 +78,36 @@ export function db(): DatabaseSync {
       error TEXT
     );
   `);
+
+  // Migrate: add scope column to tables that need it. Existing rows default to 'eac'.
+  for (const table of ["issues", "analyses", "reports", "p0_customers", "sync_runs"]) {
+    if (tableExists(conn, table) && !hasColumn(conn, table, "scope")) {
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN scope TEXT NOT NULL DEFAULT 'eac'`);
+    }
+  }
+  // Helpful indices
+  conn.exec(`
+    CREATE INDEX IF NOT EXISTS idx_issues_scope ON issues(scope);
+    CREATE INDEX IF NOT EXISTS idx_analyses_scope ON analyses(scope);
+    CREATE INDEX IF NOT EXISTS idx_reports_scope_id ON reports(scope, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_p0_scope ON p0_customers(scope);
+  `);
+
   _db = conn;
   return conn;
 }
 
-export function saveIssue(issue: JiraIssue) {
+export function saveIssue(scope: Scope, issue: JiraIssue) {
   db().prepare(
-    `INSERT INTO issues (key, data, synced_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(key) DO UPDATE SET data = excluded.data, synced_at = CURRENT_TIMESTAMP`,
-  ).run(issue.key, JSON.stringify(issue));
+    `INSERT INTO issues (key, data, synced_at, scope) VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+     ON CONFLICT(key) DO UPDATE SET data = excluded.data, synced_at = CURRENT_TIMESTAMP, scope = excluded.scope`,
+  ).run(issue.key, JSON.stringify(issue), scope);
 }
 
-export function listIssues(): JiraIssue[] {
-  const rows = db().prepare(`SELECT data FROM issues ORDER BY key`).all() as { data: string }[];
+export function listIssues(scope: Scope): JiraIssue[] {
+  const rows = db()
+    .prepare(`SELECT data FROM issues WHERE scope = ? ORDER BY key`)
+    .all(scope) as { data: string }[];
   return rows.map((r) => JSON.parse(r.data) as JiraIssue);
 }
 
@@ -83,15 +118,17 @@ export function getIssue(key: string): JiraIssue | null {
   return row ? (JSON.parse(row.data) as JiraIssue) : null;
 }
 
-export function saveAnalysis(a: TicketAnalysis) {
+export function saveAnalysis(scope: Scope, a: TicketAnalysis) {
   db().prepare(
-    `INSERT INTO analyses (issue_key, data, generated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(issue_key) DO UPDATE SET data = excluded.data, generated_at = CURRENT_TIMESTAMP`,
-  ).run(a.issueKey, JSON.stringify(a));
+    `INSERT INTO analyses (issue_key, data, generated_at, scope) VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+     ON CONFLICT(issue_key) DO UPDATE SET data = excluded.data, generated_at = CURRENT_TIMESTAMP, scope = excluded.scope`,
+  ).run(a.issueKey, JSON.stringify(a), scope);
 }
 
-export function listAnalyses(): TicketAnalysis[] {
-  const rows = db().prepare(`SELECT data FROM analyses`).all() as { data: string }[];
+export function listAnalyses(scope: Scope): TicketAnalysis[] {
+  const rows = db()
+    .prepare(`SELECT data FROM analyses WHERE scope = ?`)
+    .all(scope) as { data: string }[];
   return rows.map((r) => JSON.parse(r.data) as TicketAnalysis);
 }
 
@@ -102,20 +139,24 @@ export function getAnalysis(key: string): TicketAnalysis | null {
   return row ? (JSON.parse(row.data) as TicketAnalysis) : null;
 }
 
-export function saveReport(report: TriageReport): number {
-  const info = db().prepare(`INSERT INTO reports (data) VALUES (?)`).run(JSON.stringify(report));
+export function saveReport(scope: Scope, report: TriageReport): number {
+  const info = db()
+    .prepare(`INSERT INTO reports (data, scope) VALUES (?, ?)`)
+    .run(JSON.stringify(report), scope);
   return Number(info.lastInsertRowid);
 }
 
-export function latestReport(): TriageReport | null {
-  const row = db().prepare(`SELECT data FROM reports ORDER BY id DESC LIMIT 1`).get() as
-    | { data: string }
-    | undefined;
+export function latestReport(scope: Scope): TriageReport | null {
+  const row = db()
+    .prepare(`SELECT data FROM reports WHERE scope = ? ORDER BY id DESC LIMIT 1`)
+    .get(scope) as { data: string } | undefined;
   return row ? (JSON.parse(row.data) as TriageReport) : null;
 }
 
 export function listP0(): P0Customer[] {
-  const rows = db().prepare(`SELECT * FROM p0_customers ORDER BY name`).all() as Array<{
+  const rows = db()
+    .prepare(`SELECT * FROM p0_customers ORDER BY name`)
+    .all() as Array<{
     id: string;
     name: string;
     jql_fragment: string;
@@ -131,6 +172,28 @@ export function listP0(): P0Customer[] {
     createdAt: r.created_at,
     lastAnalyzedAt: r.last_analyzed_at,
   }));
+}
+
+export function getP0(id: string): P0Customer | null {
+  const row = db().prepare(`SELECT * FROM p0_customers WHERE id = ?`).get(id) as
+    | {
+        id: string;
+        name: string;
+        jql_fragment: string;
+        notes: string | null;
+        created_at: string;
+        last_analyzed_at: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    jqlFragment: row.jql_fragment,
+    notes: row.notes,
+    createdAt: row.created_at,
+    lastAnalyzedAt: row.last_analyzed_at,
+  };
 }
 
 export function upsertP0(c: P0Customer) {
@@ -163,8 +226,10 @@ export function setConfigValue(key: string, value: string) {
   ).run(key, value);
 }
 
-export function recordSyncStart(): number {
-  const info = db().prepare(`INSERT INTO sync_runs (status) VALUES ('running')`).run();
+export function recordSyncStart(scope: Scope): number {
+  const info = db()
+    .prepare(`INSERT INTO sync_runs (status, scope) VALUES ('running', ?)`)
+    .run(scope);
   return Number(info.lastInsertRowid);
 }
 
@@ -180,6 +245,8 @@ export function recordSyncFinish(
   ).run(status, pulled, analyzed, error, id);
 }
 
-export function latestSyncRun() {
-  return db().prepare(`SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1`).get();
+export function latestSyncRun(scope: Scope) {
+  return db()
+    .prepare(`SELECT * FROM sync_runs WHERE scope = ? ORDER BY id DESC LIMIT 1`)
+    .get(scope);
 }

@@ -17,7 +17,7 @@ export default function P0Page() {
   async function refresh() {
     setLoading(true);
     const data = await fetch("/api/p0").then((r) => r.json());
-    setList(data);
+    setList(Array.isArray(data) ? data : []);
     setLoading(false);
   }
 
@@ -49,6 +49,9 @@ export default function P0Page() {
           <h1 className="text-lg font-semibold">P0 Customers</h1>
           <span className="text-xs text-fg-muted">{list.length} configured</span>
         </div>
+        <span className="text-[11px] text-fg-subtle">
+          Applies to both EAC and FR dashboards
+        </span>
       </header>
 
       <div className="p-6 space-y-6 max-w-4xl">
@@ -56,7 +59,7 @@ export default function P0Page() {
           <CardHeader>
             <CardTitle>Add a P0 customer</CardTitle>
             <span className="text-[11px] text-fg-subtle">
-              Daily tracking + weekly summary will be generated for each
+              Daily tracking + weekly summary will be generated for each dashboard
             </span>
           </CardHeader>
           <CardBody className="space-y-3">
@@ -70,7 +73,7 @@ export default function P0Page() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>JQL fragment (ANDed with master JQL)</Label>
+                <Label>JQL fragment (ANDed with each dashboard&apos;s JQL)</Label>
                 <Input
                   placeholder='labels = "customer-acme" OR "Account[Customer]" = "Acme"'
                   value={draft.jqlFragment}
@@ -150,16 +153,27 @@ function P0Row({ customer, onChanged }: { customer: P0Customer; onChanged: () =>
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{editing ? (
-          <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-        ) : customer.name}</CardTitle>
+        <CardTitle>
+          {editing ? (
+            <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+          ) : (
+            customer.name
+          )}
+        </CardTitle>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-fg-subtle">
             Last analyzed: {formatDate(customer.lastAnalyzedAt)}
           </span>
           {editing ? (
             <>
-              <Button size="sm" variant="secondary" onClick={() => { setDraft(customer); setEditing(false); }}>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setDraft(customer);
+                  setEditing(false);
+                }}
+              >
                 Cancel
               </Button>
               <Button size="sm" onClick={save} disabled={saving}>

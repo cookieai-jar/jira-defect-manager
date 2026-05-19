@@ -1,5 +1,26 @@
 export type TemperatureBand = "cold" | "cool" | "warm" | "hot" | "critical";
 
+export type Scope = "eac" | "fr" | "sec";
+
+export const SCOPES: readonly Scope[] = ["eac", "fr", "sec"] as const;
+
+export const SCOPE_LABELS: Record<Scope, string> = {
+  eac: "Customer",
+  fr: "FR",
+  sec: "Security",
+};
+
+/** Scopes that have a P0 customer correlation section on their dashboard. */
+export const SCOPES_WITH_P0: readonly Scope[] = ["eac", "fr"] as const;
+
+export function isScope(s: string | null | undefined): s is Scope {
+  return s === "eac" || s === "fr" || s === "sec";
+}
+
+export function scopeHasP0(scope: Scope): boolean {
+  return SCOPES_WITH_P0.includes(scope);
+}
+
 export interface JiraComment {
   id: string;
   author: string;
@@ -37,7 +58,8 @@ export interface P0Customer {
 }
 
 export interface AppConfig {
-  masterJql: string;
+  jqls: Record<Scope, string>;
+  dashboards: Record<Scope, boolean>;
   sprintLengthDays: number;
   inactivityThresholdDays: number;
   pingThresholdDays: number;
@@ -76,7 +98,6 @@ export interface TriageReport {
   generatedAt: string;
   p0Summaries: P0Summary[];
   ticketAnalyses: TicketAnalysis[];
-  twoSprintPlan: string;         // markdown summary of plan
   closeCandidates: string[];     // issue keys
   pingCandidates: { issueKey: string; target: "reporter" | "assignee" }[];
 }

@@ -17,39 +17,61 @@ import {
   setSyncState,
   startSyncState,
 } from "@/lib/sync-state";
+import { isScope, scopeHasP0, type Scope } from "@/types/triage";
 
-export async function GET() {
-  return NextResponse.json(getSyncState());
+function scopeFromReq(req: Request): Scope | null {
+  const url = new URL(req.url);
+  const s = url.searchParams.get("scope");
+  return isScope(s) ? s : null;
 }
 
-export async function POST() {
-  if (getSyncState().running) {
+export async function GET(req: Request) {
+  const scope = scopeFromReq(req);
+  if (!scope)
+    return NextResponse.json({ error: "scope must be 'eac' or 'fr'" }, { status: 400 });
+  return NextResponse.json(getSyncState(scope));
+}
+
+export async function POST(req: Request) {
+  const scope = scopeFromReq(req);
+  if (!scope)
+    return NextResponse.json({ error: "scope must be 'eac' or 'fr'" }, { status: 400 });
+  if (getSyncState(scope).running) {
     return NextResponse.json({ error: "sync already running" }, { status: 409 });
   }
-  startSyncState();
-  void runSync();
-  return NextResponse.json({ ok: true, state: getSyncState() }, { status: 202 });
+  startSyncState(scope);
+  void runSync(scope);
+  return NextResponse.json({ ok: true, state: getSyncState(scope) }, { status: 202 });
 }
 
-async function runSync() {
+async function runSync(scope: Scope) {
   const config = getConfig();
-  const p0 = listP0();
-  const runId = recordSyncStart();
+  const masterJql = config.jqls[scope];
+  const p0 = scopeHasP0(scope) ? listP0() : [];
+  const runId = recordSyncStart(scope);
   try {
-    setSyncState({ phase: "jira", message: "Querying JIRA…", done: 0, total: 0 });
-    const issues = await searchIssues(config.masterJql, config.maxIssuesPerSync);
-    for (const issue of issues) saveIssue(issue);
-    setSyncState({ issuesPulled: issues.length, message: `Pulled ${issues.length} issues` });
+    setSyncState(scope, {
+      phase: "jira",
+      message: "Querying JIRA…",
+      done: 0,
+      total: 0,
+    });
+    const issues = await searchIssues(masterJql, config.maxIssuesPerSync);
+    for (const issue of issues) saveIssue(scope, issue);
+    setSyncState(scope, {
+      issuesPulled: issues.length,
+      message: `Pulled ${issues.length} issues`,
+    });
 
     // For each P0 customer, pull the authoritative set of tickets via
     // (masterJql) AND (jqlFragment). This is the user's source of truth for
     // which tickets belong to which P0 — overriding any model inference.
     const issueMap = new Map(issues.map((i) => [i.key, i]));
     const p0TicketMap = new Map<string, string>();
-    const masterCore = config.masterJql.replace(/\s+ORDER\s+BY\s+.*$/i, "").trim();
+    const masterCore = masterJql.replace(/\s+ORDER\s+BY\s+.*$/i, "").trim();
     for (let i = 0; i < p0.length; i++) {
       const customer = p0[i];
-      setSyncState({
+      setSyncState(scope, {
         phase: "jira",
         message: `Matching P0 customer ${i + 1}/${p0.length}: ${customer.name}`,
         done: i,
@@ -59,11 +81,9 @@ async function runSync() {
         const jql = `(${masterCore}) AND (${customer.jqlFragment})`;
         const matched = await searchIssues(jql, 500);
         for (const m of matched) {
-          // Ensure the issue is in the cache too (it may not have come back in the master pull
-          // if the master JQL caps at maxIssuesPerSync).
           if (!issueMap.has(m.key)) {
             issueMap.set(m.key, m);
-            saveIssue(m);
+            saveIssue(scope, m);
           }
           p0TicketMap.set(m.key, customer.name);
         }
@@ -75,22 +95,21 @@ async function runSync() {
       }
     }
     const enrichedIssues = Array.from(issueMap.values());
-    setSyncState({
+    setSyncState(scope, {
       issuesPulled: enrichedIssues.length,
       message: `Pulled ${enrichedIssues.length} issues (${p0TicketMap.size} mapped to P0 customers)`,
     });
 
     if (enrichedIssues.length === 0) {
-      saveReport({
+      saveReport(scope, {
         generatedAt: new Date().toISOString(),
         p0Summaries: [],
         ticketAnalyses: [],
-        twoSprintPlan: "_No tickets matched the master JQL._",
         closeCandidates: [],
         pingCandidates: [],
       });
       recordSyncFinish(runId, "success", 0, 0);
-      finishSyncState();
+      finishSyncState(scope);
       return;
     }
 
@@ -98,40 +117,38 @@ async function runSync() {
       enrichedIssues,
       p0,
       config,
+      scope,
       (event) => {
-        setSyncState({
+        setSyncState(scope, {
           phase: event.phase as never,
           done: event.done,
           total: event.total,
           message:
             event.phase === "tickets"
               ? `Analyzing ticket batches (${event.done}/${event.total})`
-              : event.phase === "p0"
-                ? `Summarizing P0 customers (${event.done}/${event.total})`
-                : "Building 2-sprint plan",
+              : `Summarizing P0 customers (${event.done}/${event.total})`,
         });
       },
       p0TicketMap,
     );
 
-    for (const a of report.ticketAnalyses) saveAnalysis(a);
-    saveReport(report);
+    for (const a of report.ticketAnalyses) saveAnalysis(scope, a);
+    saveReport(scope, report);
 
-    // Bump lastAnalyzedAt on every P0 we summarized.
     const now = new Date().toISOString();
     for (const customer of p0) {
       upsertP0({ ...customer, lastAnalyzedAt: now });
     }
 
     recordSyncFinish(runId, "success", enrichedIssues.length, report.ticketAnalyses.length);
-    setSyncState({
+    setSyncState(scope, {
       issuesAnalyzed: report.ticketAnalyses.length,
       message: `Analyzed ${report.ticketAnalyses.length} tickets`,
     });
-    finishSyncState();
+    finishSyncState(scope);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     recordSyncFinish(runId, "error", 0, 0, msg);
-    finishSyncState(msg);
+    finishSyncState(scope, msg);
   }
 }

@@ -6,6 +6,7 @@ import type {
   TriageReport,
   AppConfig,
   TemperatureBand,
+  Scope,
 } from "@/types/triage";
 import { defaultModel, jsonCompletion } from "./anthropic";
 import { daysSince } from "./utils";
@@ -51,7 +52,7 @@ function compactIssue(issue: JiraIssue): string {
   );
 }
 
-const TICKET_SYSTEM = `You are a customer-success-focused engineering manager triaging JIRA tickets.
+const TICKET_SYSTEM_EAC = `You are a customer-success-focused engineering manager triaging JIRA bug/support tickets.
 For each ticket, output one JSON object with these fields:
 
 - issueKey: string (echo)
@@ -78,6 +79,68 @@ For each ticket, output one JSON object with these fields:
 
 Return ONLY a JSON array of these objects inside a \`\`\`json fence. No prose.`;
 
+const TICKET_SYSTEM_FR = `You are a product engineering manager triaging JIRA Feature Request (FR) tickets.
+These are customer-driven product asks, not bugs. Frame everything around product delivery, not fix turnaround.
+
+For each ticket, output one JSON object with these fields:
+
+- issueKey: string (echo)
+- severityScore: integer 1-10. This is the BUSINESS VALUE / CUSTOMER IMPACT of the FR. Higher = more strategic to the company (broad applicability, larger revenue at stake, alignment with stated product direction, tied to expansion or competitive deal). Niche one-off asks or workarounds are lower.
+- temperatureScore: integer 1-10. This is CUSTOMER DEMAND INTENSITY for the FR. Higher = customer is pushing hard (repeated follow-ups, escalation language, executive sponsorship on either side, tied to renewal or churn risk). Lower = casual nice-to-have, no recent pressure.
+- customer: best-effort customer/account name from labels/components/comments/title, or null if unclear.
+- status: one of "active" | "stalled" | "blocked" | "ready-to-close" | "resolved".
+   * "active" = recent product motion (PRD updates, scoping, design work, eng investigation, decisions made).
+   * "stalled" = no recent activity but the FR still appears relevant.
+   * "blocked" = waiting on PRD, design, scoping, leadership approval, eng capacity, dependent FR, or customer clarification.
+   * "ready-to-close" = looks like it should be declined, deferred indefinitely, or has been silently shipped/superseded by another FR.
+   * "resolved" = statusCategory == done.
+- recommendation: one of "close" | "ping-reporter" | "ping-assignee" | "escalate" | "continue" | "schedule".
+   * "close" — decline the FR or archive (no longer relevant, superseded, duplicate, or won't-do).
+   * "ping-reporter" — need clarification or fresh validation from the requestor/customer.
+   * "ping-assignee" — the PM or eng owner has gone silent on a live FR.
+   * "escalate" — high-value FR with strong customer demand that is not getting product leadership attention.
+   * "continue" — product/eng motion is happening, no intervention needed.
+   * "schedule" — needs explicit placement on the product roadmap.
+- rationale: 1-2 sentences. Reference specific FR signals — strategic fit, customer asks, exec sponsors, deal value, roadmap alignment.
+- nextStep: One concrete product action the EM should take this week (e.g. "loop in PM for scoping", "schedule PRD review", "ask customer for use-case examples").
+- suggestedSprint: 1 (this sprint), 2 (next sprint), or null (later roadmap / backlog).
+- evidenceQuotes: array of 0-3 short verbatim quotes (<=140 chars each) from comments backing the demand read. Empty array if no comments.
+
+Return ONLY a JSON array of these objects inside a \`\`\`json fence. No prose.`;
+
+const TICKET_SYSTEM_SEC = `You are a security-focused engineering manager triaging JIRA security and PII tickets.
+For each ticket, output one JSON object with these fields:
+
+- issueKey: string (echo)
+- severityScore: integer 1-10. Map roughly to CVSS-style risk: combine likelihood of exploitation (auth required? remote? prereqs?) with impact (data exposure scope, sensitive data classes like PII / credentials / tokens, blast radius, regulatory exposure). 9-10 = active exploitation, broad PII leak, RCE on prod. 1-3 = theoretical, low-impact, well-mitigated.
+- temperatureScore: integer 1-10. URGENCY pressure on the team: external disclosure clock, customer-facing exposure, regulator/legal involvement, executive escalation, public CVE assigned, or coordinated-disclosure deadline drive this UP. Internal-only, no time pressure drives it DOWN.
+- customer: best-effort customer/account name from labels/components/title if the issue affects a specific tenant; null otherwise (most security issues are cross-tenant).
+- status: one of "active" | "stalled" | "blocked" | "ready-to-close" | "resolved".
+   * "active" = recent investigation / patching / mitigation progress.
+   * "stalled" = no progress for a while but still unresolved.
+   * "blocked" = waiting on a third party (vendor patch, customer info, security review, legal review).
+   * "ready-to-close" = the vuln looks mitigated or determined to be a false positive but the ticket is still open.
+   * "resolved" = statusCategory == done.
+- recommendation: one of "close" | "ping-reporter" | "ping-assignee" | "escalate" | "continue" | "schedule".
+   * "close" — false positive, accepted risk, or duplicate.
+   * "ping-reporter" — need repro / scope clarification from the reporter or external researcher.
+   * "ping-assignee" — assignee has gone silent on an open vulnerability.
+   * "escalate" — high severity AND high urgency: PII at risk, active exploit, public disclosure clock, regulator involved.
+   * "continue" — investigation / remediation is in motion.
+   * "schedule" — needs to be planned into the security sprint or hardening backlog.
+- rationale: 1-2 sentences. Reference concrete signals: data class, exploitability, public disclosure, regulatory clock, sensitive endpoint, etc.
+- nextStep: One concrete security action (e.g. "rotate exposed credentials", "request CVE", "patch dependency to X.Y.Z", "ask reporter for HTTP repro").
+- suggestedSprint: 1 (this sprint), 2 (next sprint), or null (later / hardening backlog).
+- evidenceQuotes: array of 0-3 short verbatim quotes (<=140 chars each) from comments backing the urgency read.
+
+Return ONLY a JSON array of these objects inside a \`\`\`json fence. No prose.`;
+
+function ticketSystem(scope: Scope): string {
+  if (scope === "fr") return TICKET_SYSTEM_FR;
+  if (scope === "sec") return TICKET_SYSTEM_SEC;
+  return TICKET_SYSTEM_EAC;
+}
+
 interface RawTicketAnalysis {
   issueKey: string;
   severityScore: number;
@@ -95,17 +158,18 @@ async function analyzeBatch(
   batch: JiraIssue[],
   model: string,
   p0Names: Set<string>,
+  scope: Scope,
 ): Promise<TicketAnalysis[]> {
-  const user = `Analyze the following ${batch.length} JIRA tickets. Today is ${new Date().toISOString().slice(0, 10)}.
+  const user = `Analyze the following ${batch.length} JIRA ${scope === "fr" ? "feature request" : "support"} tickets. Today is ${new Date().toISOString().slice(0, 10)}.
 
 ${batch.map((i) => compactIssue(i)).join("\n---\n")}`;
 
   const raw = await jsonCompletion<RawTicketAnalysis[]>({
     model,
-    system: TICKET_SYSTEM,
+    system: ticketSystem(scope),
     user,
     systemCacheable: true,
-    maxTokens: 6000,
+    maxTokens: 8000,
   });
 
   return batch.map((issue) => {
@@ -147,8 +211,8 @@ function asMarkdown(v: unknown): string {
   return String(v);
 }
 
-const P0_SYSTEM = `You are an engineering manager writing the weekly status update for a P0 customer.
-Given the customer's open JIRA tickets, write a focused, factual status doc.
+const P0_SYSTEM_EAC = `You are an engineering manager writing the weekly status update for a P0 customer.
+Given the customer's open JIRA support tickets, write a focused, factual status doc.
 
 CRITICAL RULES:
 - weeklyProgress must contain EXACTLY ONE BULLET per ticket. NEVER list the
@@ -188,6 +252,56 @@ Output one JSON object with these fields, all in GitHub-flavored markdown:
 
 Return ONLY the JSON inside a \`\`\`json fence.`;
 
+const P0_SYSTEM_FR = `You are a product manager writing the weekly DELIVERY STATUS for a P0 customer's open feature requests (FRs).
+These are customer-driven product asks, not bugs. Frame everything around product delivery (PRD, scoping, design, engineering, roadmap) — NOT bug triage.
+
+CRITICAL RULES:
+- weeklyProgress must contain EXACTLY ONE BULLET per FR ticket. NEVER list the
+  same ticket key in two separate bullets — consolidate ALL updates for that
+  FR into a single bullet.
+
+  BAD (do not do this):
+    - **FR-3192**: PM started scoping on Monday.
+    - **FR-3192**: Eng raised feasibility concerns Tuesday.
+
+  GOOD (do this):
+    - **FR-3192**: PM started scoping Monday; Eng raised feasibility concerns
+      Tuesday and is investigating before next PRD revision.
+
+- dailyTracker must contain EXACTLY ONE CHECKBOX per FR.
+- blockers must be a deduplicated array of distinct DELIVERY blockers.
+
+Output one JSON object with these fields, all in GitHub-flavored markdown:
+
+- weeklyProgress: One bullet per FR (max 10). Lead with the ticket key bolded,
+  then 1-3 sentences on what moved this week from a product-delivery
+  standpoint: PRD updates, scoping calls, design progress, eng investigation,
+  customer validation, decisions made, roadmap placement. Use "no movement
+  this week" when nothing changed. Do NOT frame as bug fixes.
+- dailyTracker: Checklist with EXACTLY ONE item per FR. Format:
+  "- [ ] <TICKET-KEY> — <next product/delivery action> (owner: <PM or eng name>)"
+- resolutionPlan: A concrete DELIVERY PLAN in markdown. Use one
+  "### <TICKET-KEY>" subheading per FR — never repeat a key. For each FR
+  include: target release or quarter if inferable, who owns design vs.
+  engineering, dependencies (other FRs, scoping, capacity, approvals),
+  and the recommended next milestone.
+- blockers: Deduplicated array of distinct delivery blockers across all FRs.
+  Examples: "PRD pending PM review", "design capacity constrained until Q4",
+  "waiting on customer for use-case examples", "depends on FR-XXXX shipping
+  first", "scoping reveals larger effort than estimated".
+- health: "green" | "yellow" | "red".
+  * red = at least one high-demand FR slipping with no plan, OR a renewal/
+    expansion deal is gated on a slipping FR, OR multiple stalled FRs from
+    the same customer.
+  * yellow = some FRs need attention but no immediate revenue risk.
+  * green = clear path to delivery on all open FRs.
+
+Return ONLY the JSON inside a \`\`\`json fence.`;
+
+function p0System(scope: Scope): string {
+  return scope === "fr" ? P0_SYSTEM_FR : P0_SYSTEM_EAC;
+}
+
 interface RawP0Summary {
   weeklyProgress: unknown;
   dailyTracker: unknown;
@@ -200,6 +314,7 @@ async function summarizeP0(
   customer: P0Customer,
   issues: JiraIssue[],
   model: string,
+  scope: Scope,
 ): Promise<P0Summary> {
   if (issues.length === 0) {
     return {
@@ -222,10 +337,10 @@ ${issues.map((i) => compactIssue(i)).join("\n---\n")}`;
 
   const raw = await jsonCompletion<RawP0Summary>({
     model,
-    system: P0_SYSTEM,
+    system: p0System(scope),
     user,
     systemCacheable: true,
-    maxTokens: 4000,
+    maxTokens: 8000,
   });
 
   const rawBlockers = Array.isArray(raw.blockers)
@@ -308,52 +423,11 @@ function dedupeTicketBullets(md: string): string {
   return out.join("\n");
 }
 
-const PLAN_SYSTEM = `You are an engineering manager building a 2-sprint resolution plan for non-P0 customer tickets.
-
-Output one JSON object:
-- plan: markdown with two sections, "## Sprint 1" and "## Sprint 2". Under each, group tickets by theme/component. For each ticket give ticket key, 1-line action, suggested owner if obvious from data, and rough effort (S/M/L).
-
-Return ONLY the JSON inside a \`\`\`json fence.`;
-
-async function generateTwoSprintPlan(
-  analyses: TicketAnalysis[],
-  issuesByKey: Map<string, JiraIssue>,
-  model: string,
-): Promise<string> {
-  const candidates = analyses
-    .filter((a) => !a.isP0Customer && a.recommendation !== "close" && a.suggestedSprint !== null)
-    .sort((a, b) => (b.severityScore + b.temperatureScore) - (a.severityScore + a.temperatureScore))
-    .slice(0, 60);
-  if (candidates.length === 0) {
-    return "_No non-P0 tickets need scheduling right now._";
-  }
-  const payload = candidates.map((a) => {
-    const issue = issuesByKey.get(a.issueKey);
-    return {
-      key: a.issueKey,
-      summary: issue?.summary ?? "",
-      component: issue?.components ?? [],
-      assignee: issue?.assignee ?? null,
-      severity: a.severityScore,
-      temperature: a.temperatureScore,
-      suggestedSprint: a.suggestedSprint,
-      nextStep: a.nextStep,
-    };
-  });
-  const res = await jsonCompletion<{ plan: unknown }>({
-    model,
-    system: PLAN_SYSTEM,
-    user: JSON.stringify(payload, null, 2),
-    systemCacheable: true,
-    maxTokens: 4000,
-  });
-  return asMarkdown(res.plan);
-}
-
 export async function runAnalysis(
   issues: JiraIssue[],
   p0Customers: P0Customer[],
   config: AppConfig,
+  scope: Scope,
   onProgress?: (event: { phase: string; done: number; total: number }) => void,
   /** Map of issue key -> authoritative P0 customer name (from JQL fragment match). */
   p0TicketMap: Map<string, string> = new Map(),
@@ -379,7 +453,7 @@ export async function runAnalysis(
     while (true) {
       const idx = nextIndex++;
       if (idx >= batches.length) return;
-      const res = await analyzeBatch(batches[idx], model, p0NameSet);
+      const res = await analyzeBatch(batches[idx], model, p0NameSet, scope);
       ticketAnalyses.push(...res);
       finished++;
       onProgress?.({ phase: "tickets", done: finished, total: batches.length });
@@ -413,15 +487,25 @@ export async function runAnalysis(
       .filter((a) => matchedKeys.has(a.issueKey) && a.status !== "resolved")
       .map((a) => issuesByKey.get(a.issueKey))
       .filter((x): x is JiraIssue => Boolean(x));
-    const summary = await summarizeP0(customer, matched, model);
-    p0Summaries.push(summary);
+    try {
+      const summary = await summarizeP0(customer, matched, model, scope);
+      p0Summaries.push(summary);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[runAnalysis] P0 summary failed for ${customer.name}:`, errMsg);
+      p0Summaries.push({
+        customer: customer.name,
+        weeklyProgress: `_Summary generation failed: ${errMsg.slice(0, 200)}_`,
+        dailyTracker: "_unavailable — see error above_",
+        resolutionPlan: "_unavailable — see error above_",
+        openIssueKeys: matched.map((m) => m.key),
+        blockers: [],
+        health: "yellow",
+        generatedAt: new Date().toISOString(),
+      });
+    }
     onProgress?.({ phase: "p0", done: i + 1, total: p0Customers.length });
   }
-
-  // Phase 3: two-sprint plan
-  onProgress?.({ phase: "plan", done: 0, total: 1 });
-  const twoSprintPlan = await generateTwoSprintPlan(ticketAnalyses, issuesByKey, model);
-  onProgress?.({ phase: "plan", done: 1, total: 1 });
 
   // Derive close + ping candidates from analyses
   const closeCandidates = ticketAnalyses
@@ -453,7 +537,6 @@ export async function runAnalysis(
     generatedAt: new Date().toISOString(),
     p0Summaries,
     ticketAnalyses,
-    twoSprintPlan,
     closeCandidates,
     pingCandidates,
   };

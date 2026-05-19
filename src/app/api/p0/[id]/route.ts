@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { deleteP0, listP0, upsertP0 } from "@/lib/db";
+import { deleteP0, getP0, upsertP0 } from "@/lib/db";
 import { z } from "zod";
 
 const PatchSchema = z.object({
@@ -10,7 +10,7 @@ const PatchSchema = z.object({
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const existing = listP0().find((c) => c.id === id);
+  const existing = getP0(id);
   if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
   const body = await req.json();
   const parsed = PatchSchema.safeParse(body);

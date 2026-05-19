@@ -7,6 +7,8 @@ import { Input, Label, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Check, CircleAlert, Loader2, Save } from "lucide-react";
 import type { AppConfig } from "@/types/triage";
+import { SCOPES, SCOPE_LABELS } from "@/types/triage";
+import { Toggle } from "@/components/ui/toggle";
 
 interface Health {
   jira: { ok: true; user: string } | { ok: false; error: string };
@@ -21,8 +23,12 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    fetch("/api/config").then((r) => r.json()).then(setConfig);
-    fetch("/api/health").then((r) => r.json()).then(setHealth);
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then(setConfig);
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then(setHealth);
   }, []);
 
   async function save() {
@@ -39,6 +45,8 @@ export default function SettingsPage() {
       setConfig(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
+      // Notify other client components (nav) that config has changed.
+      window.dispatchEvent(new Event("app-config-changed"));
     } finally {
       setSaving(false);
     }
@@ -57,7 +65,13 @@ export default function SettingsPage() {
       <header className="px-6 h-14 border-b border-border flex items-center justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
         <Button onClick={save} disabled={saving}>
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : saved ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+          {saving ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : saved ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
           {saving ? "Saving…" : saved ? "Saved" : "Save"}
         </Button>
       </header>
@@ -100,20 +114,70 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Triage scope</CardTitle>
+            <CardTitle>Dashboard visibility</CardTitle>
+            <span className="text-[11px] text-fg-subtle">
+              Hide dashboards from the sidebar without deleting their data
+            </span>
+          </CardHeader>
+          <CardBody className="divide-y divide-border">
+            {SCOPES.map((s) => (
+              <Toggle
+                key={s}
+                checked={config.dashboards[s]}
+                onChange={(next) =>
+                  setConfig({
+                    ...config,
+                    dashboards: { ...config.dashboards, [s]: next },
+                  })
+                }
+                label={`Show ${SCOPE_LABELS[s]} Dashboard`}
+                description={
+                  s === "eac"
+                    ? "Customer support / bug triage view."
+                    : s === "fr"
+                      ? "Feature request triage view."
+                      : "Security vulnerability and PII triage view."
+                }
+              />
+            ))}
+          </CardBody>
+        </Card>
+
+        {SCOPES.map((s) => (
+          <Card key={s}>
+            <CardHeader>
+              <CardTitle>{SCOPE_LABELS[s]} triage scope</CardTitle>
+              <span className="text-[11px] text-fg-subtle">
+                Defines the universe of {SCOPE_LABELS[s]} tickets to triage
+              </span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>{SCOPE_LABELS[s]} master JQL</Label>
+                <Textarea
+                  value={config.jqls[s]}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      jqls: { ...config.jqls, [s]: e.target.value },
+                    })
+                  }
+                  placeholder={`project = ${SCOPE_LABELS[s]} AND statusCategory != Done ORDER BY updated DESC`}
+                />
+                <p className="text-[11px] text-fg-subtle">
+                  {SCOPE_LABELS[s]} P0 customer JQL fragments will be AND&apos;d against this filter.
+                </p>
+              </div>
+            </CardBody>
+          </Card>
+        ))}
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Analysis settings</CardTitle>
+            <span className="text-[11px] text-fg-subtle">Shared across all scopes</span>
           </CardHeader>
           <CardBody className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Master JQL (defines the universe of customer tickets to triage)</Label>
-              <Textarea
-                value={config.masterJql}
-                onChange={(e) => setConfig({ ...config, masterJql: e.target.value })}
-                placeholder='project = SUP AND statusCategory != Done ORDER BY updated DESC'
-              />
-              <p className="text-[11px] text-fg-subtle">
-                P0 customer JQL fragments will be AND&apos;d against this filter when summarizing.
-              </p>
-            </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <Field
                 label="Sprint length (days)"
