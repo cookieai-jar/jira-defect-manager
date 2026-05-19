@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background-color: hsl(220 14% 8%);
+  color: hsl(220 10% 96%);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+* {
+  border-color: hsl(220 13% 20%);
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: hsl(220 13% 25%);
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: hsl(220 13% 35%);
+}
+
+.prose-tight p {
+  margin: 0.25rem 0;
+}
+.prose-tight ul {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+.prose-tight li {
+  margin: 0.125rem 0;
+}
+.prose-tight h2 {
+  font-weight: 600;
+  font-size: 1rem;
+  margin: 0.75rem 0 0.25rem 0;
+  color: hsl(220 10% 96%);
+}
+.prose-tight h3 {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0.25rem 0;
+  color: hsl(220 10% 96%);
+}
+.prose-tight code {
+  background: hsl(220 14% 18%);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+.prose-tight a {
+  color: hsl(220 90% 65%);
+  text-decoration: underline;
+}
