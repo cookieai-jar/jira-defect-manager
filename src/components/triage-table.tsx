@@ -108,7 +108,7 @@ export function TriageTable({
             All <span className="text-fg-subtle">· {counts.all}</span>
           </FilterChip>
           <FilterChip active={filter === "p0"} onClick={() => setFilter("p0")}>
-            P0 only <span className="text-fg-subtle">· {counts.p0}</span>
+            P0 customers <span className="text-fg-subtle">· {counts.p0}</span>
           </FilterChip>
           <FilterChip active={filter === "escalate"} onClick={() => setFilter("escalate")}>
             <AlertTriangle className="h-3 w-3" /> Escalate <span className="text-fg-subtle">· {counts.escalate}</span>

@@ -150,13 +150,41 @@ function asMarkdown(v: unknown): string {
 const P0_SYSTEM = `You are an engineering manager writing the weekly status update for a P0 customer.
 Given the customer's open JIRA tickets, write a focused, factual status doc.
 
+CRITICAL RULES:
+- weeklyProgress must contain EXACTLY ONE BULLET per ticket. NEVER list the
+  same ticket key in two separate bullets — consolidate ALL updates for that
+  ticket into a single bullet, even if there were multiple separate events
+  this week. Walk through every ticket once and only once.
+
+  BAD (do not do this):
+    - **EAC-62760**: Customer escalated on Monday.
+    - **EAC-62760**: Engineering replied on Tuesday with a fix plan.
+
+  GOOD (do this):
+    - **EAC-62760**: Customer escalated Monday; Engineering replied Tuesday
+      with a fix plan targeting end of week.
+
+- dailyTracker must contain EXACTLY ONE CHECKBOX per ticket.
+- blockers must be a deduplicated array of distinct blocking reasons. Do not
+  list the same blocker twice with different wording.
+
 Output one JSON object with these fields, all in GitHub-flavored markdown:
 
-- weeklyProgress: A 4-8 bullet markdown summary of what moved this week per ticket. Use ticket keys.
-- dailyTracker: A markdown checklist (one item per ticket, max 10) of "What's the next 24-hour action?" Format: "- [ ] <TICKET-KEY> — <one-line action> (owner: <name>)"
-- resolutionPlan: A concrete plan (markdown) to fully resolve this customer's open issues. Group by ticket. Include dependencies and an ETA per ticket when inferable.
-- blockers: Array of short strings naming blockers across all of this customer's tickets.
-- health: "green" | "yellow" | "red". red = at least one critical/hot ticket OR multiple stalled tickets OR explicit churn risk in comments.
+- weeklyProgress: One bullet per ticket (max 10 tickets). Lead each bullet with
+  the ticket key bolded, then a 1-3 sentence consolidated summary of what
+  moved this week (or "no movement" if nothing did). Example:
+  "- **EAC-61004 (Azure token expires)**: Escalated to P1 on 2026-05-18 after
+  customer pressed for update; reassigning since original investigator OOO.
+  Root cause still suspected to be \\$skiptoken invalidation."
+- dailyTracker: A markdown checklist with EXACTLY ONE item per ticket. Format:
+  "- [ ] <TICKET-KEY> — <one-line action> (owner: <name>)"
+- resolutionPlan: A concrete plan (markdown) to fully resolve this customer's
+  open issues. Use one "### <TICKET-KEY>" subheading per ticket — never repeat
+  a ticket. Include dependencies and an ETA per ticket when inferable.
+- blockers: Deduplicated array of distinct blocking reasons across all
+  tickets. Combine semantically equivalent blockers into one entry.
+- health: "green" | "yellow" | "red". red = at least one critical/hot ticket
+  OR multiple stalled tickets OR explicit churn risk in comments.
 
 Return ONLY the JSON inside a \`\`\`json fence.`;
 
@@ -200,19 +228,84 @@ ${issues.map((i) => compactIssue(i)).join("\n---\n")}`;
     maxTokens: 4000,
   });
 
-  const blockers = Array.isArray(raw.blockers)
+  const rawBlockers = Array.isArray(raw.blockers)
     ? raw.blockers.map((b) => (typeof b === "string" ? b : JSON.stringify(b))).filter(Boolean)
     : [];
+  // Dedupe blockers case-insensitively while preserving first-seen casing.
+  const seen = new Set<string>();
+  const blockers: string[] = [];
+  for (const b of rawBlockers) {
+    const norm = b.toLowerCase().replace(/\s+/g, " ").trim();
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      blockers.push(b.trim());
+    }
+  }
   return {
     customer: customer.name,
-    weeklyProgress: asMarkdown(raw.weeklyProgress),
-    dailyTracker: asMarkdown(raw.dailyTracker),
+    weeklyProgress: dedupeTicketBullets(asMarkdown(raw.weeklyProgress)),
+    dailyTracker: dedupeTicketBullets(asMarkdown(raw.dailyTracker)),
     resolutionPlan: asMarkdown(raw.resolutionPlan),
     openIssueKeys: issues.map((i) => i.key),
     blockers,
     health: raw.health,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Drop duplicate ticket bullets — including all their continuation lines and
+ * nested children — when the same JIRA key appears in two list items. The
+ * first occurrence wins.
+ *
+ * Walks line-by-line, tracking indentation. When a list item containing a
+ * previously-seen key is found, enters "drop mode" until a list item at the
+ * same or shallower indent appears (signaling the next sibling/parent bullet).
+ * Handles bullets, numbered lists, checkboxes, multi-line bullets, and
+ * nested sub-bullets.
+ */
+function dedupeTicketBullets(md: string): string {
+  if (!md) return md;
+  const lines = md.split(/\n/);
+  const KEY = /\b([A-Z][A-Z0-9]+-\d+)\b/;
+  const LIST_ITEM = /^(\s*)(?:[\-*]|\d+\.)\s/;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let droppingIndent = -1; // -1 = not dropping
+
+  for (const line of lines) {
+    if (droppingIndent >= 0) {
+      if (line.trim() === "") {
+        // Drop blank lines that sit inside the dropped block.
+        continue;
+      }
+      const itemMatch = line.match(LIST_ITEM);
+      if (itemMatch && itemMatch[1].length <= droppingIndent) {
+        // Sibling or shallower list item — end of dropped block; fall through.
+        droppingIndent = -1;
+      } else {
+        // Continuation paragraph or nested item — keep dropping.
+        continue;
+      }
+    }
+
+    const itemMatch = line.match(LIST_ITEM);
+    if (itemMatch) {
+      const keyMatch = line.match(KEY);
+      if (keyMatch) {
+        const key = keyMatch[1];
+        if (seen.has(key)) {
+          droppingIndent = itemMatch[1].length;
+          continue;
+        }
+        seen.add(key);
+      }
+    }
+    out.push(line);
+  }
+
+  return out.join("\n");
 }
 
 const PLAN_SYSTEM = `You are an engineering manager building a 2-sprint resolution plan for non-P0 customer tickets.

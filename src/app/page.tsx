@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Markdown } from "@/components/markdown";
 import { SyncButton } from "@/components/sync-button";
 import { P0Card } from "@/components/p0-card";
 import { TriageTable } from "@/components/triage-table";
@@ -14,6 +13,7 @@ import type { JiraIssue, TriageReport } from "@/types/triage";
 export default function DashboardPage() {
   const [report, setReport] = useState<TriageReport | null>(null);
   const [issues, setIssues] = useState<JiraIssue[]>([]);
+  const [jiraBaseUrl, setJiraBaseUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -23,6 +23,7 @@ export default function DashboardPage() {
       const data = await fetch("/api/report").then((r) => r.json());
       setReport(data.report);
       setIssues(data.issues);
+      setJiraBaseUrl(data.jiraBaseUrl ?? "");
     } finally {
       setLoading(false);
     }
@@ -96,12 +97,13 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold">P0 customers</h2>
                 <span className="text-xs text-fg-muted">
-                  {report.p0Summaries.length} tracked
+                  {report.p0Summaries.length} tracked ·{" "}
+                  {report.p0Summaries.reduce((n, s) => n + s.openIssueKeys.length, 0)} tickets
                 </span>
               </div>
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
                 {report.p0Summaries.map((s) => (
-                  <P0Card key={s.customer} summary={s} />
+                  <P0Card key={s.customer} summary={s} jiraBaseUrl={jiraBaseUrl} />
                 ))}
               </div>
             </section>
@@ -178,17 +180,6 @@ export default function DashboardPage() {
             </Card>
           </section>
 
-          {/* 2-sprint plan */}
-          <section>
-            <Card>
-              <CardHeader>
-                <CardTitle>2-sprint resolution plan (non-P0)</CardTitle>
-              </CardHeader>
-              <CardBody>
-                <Markdown>{report.twoSprintPlan}</Markdown>
-              </CardBody>
-            </Card>
-          </section>
         </div>
       )}
 

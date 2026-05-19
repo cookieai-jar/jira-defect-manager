@@ -26,14 +26,38 @@ body {
 }
 
 .prose-tight p {
-  margin: 0.25rem 0;
+  margin: 0.4rem 0;
+  line-height: 1.55;
 }
-.prose-tight ul {
-  margin: 0.25rem 0;
-  padding-left: 1.25rem;
+.prose-tight ul,
+.prose-tight ol {
+  margin: 0.5rem 0;
+  padding-left: 1.35rem;
 }
-.prose-tight li {
-  margin: 0.125rem 0;
+.prose-tight ul > li,
+.prose-tight ol > li {
+  margin: 0.6rem 0;
+  line-height: 1.55;
+}
+.prose-tight ul ul > li,
+.prose-tight ol ol > li,
+.prose-tight ul ol > li,
+.prose-tight ol ul > li {
+  margin: 0.2rem 0;
+}
+.prose-tight li > p {
+  margin: 0.2rem 0;
+}
+.prose-tight li + li {
+  border-top: 1px dashed hsl(220 13% 18%);
+  padding-top: 0.55rem;
+}
+.prose-tight ul ul > li + li,
+.prose-tight ol ol > li + li,
+.prose-tight ul ol > li + li,
+.prose-tight ol ul > li + li {
+  border-top: none;
+  padding-top: 0;
 }
 .prose-tight h2 {
   font-weight: 600;
