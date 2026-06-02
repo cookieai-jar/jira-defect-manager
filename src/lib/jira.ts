@@ -182,7 +182,7 @@ export async function searchResolvedRefs(
   while (out.length < maxResults) {
     const body: Record<string, unknown> = {
       jql,
-      fields: ["summary", "resolutiondate", "assignee"],
+      fields: ["summary", "resolutiondate", "assignee", "priority", "status"],
       maxResults: Math.min(pageSize, maxResults - out.length),
     };
     if (nextPageToken) body.nextPageToken = nextPageToken;
@@ -193,6 +193,8 @@ export async function searchResolvedRefs(
           summary: string;
           resolutiondate: string | null;
           assignee?: { displayName: string } | null;
+          priority?: { name: string } | null;
+          status?: { name: string } | null;
         };
       }>;
       nextPageToken?: string;
@@ -208,6 +210,8 @@ export async function searchResolvedRefs(
         resolved: raw.fields.resolutiondate,
         assignee: raw.fields.assignee?.displayName ?? null,
         url: `${e.baseUrl}/browse/${raw.key}`,
+        priority: raw.fields.priority?.name ?? null,
+        status: raw.fields.status?.name ?? null,
       })),
     );
     if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;

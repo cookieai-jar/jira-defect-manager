@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Badge, TempBadge } from "@/components/ui/badge";
 import { cn, daysSince } from "@/lib/utils";
-import type { JiraIssue, SlaStatus, TicketAnalysis } from "@/types/triage";
+import type { JiraIssue, Priority, SlaStatus, TicketAnalysis } from "@/types/triage";
 
 type SortKey = "rank" | "severity" | "temperature" | "updated" | "key";
 
@@ -41,17 +41,37 @@ export function TriageTable({
   rows,
   onSelect,
   showSla = false,
+  enabledPriorities,
 }: {
   rows: Row[];
   onSelect: (key: string) => void;
   showSla?: boolean;
+  /**
+   * When provided, the in-table priority chip group only renders pills for
+   * priorities in this set, and any in-table priority selection reverts to
+   * "all" if its priority leaves the set.
+   */
+  enabledPriorities?: Set<Priority>;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [filter, setFilter] = useState<
     "all" | "p0" | "close" | "ping" | "escalate" | "late"
   >("all");
+  const [priorityFilter, setPriorityFilter] = useState<"all" | Priority>("all");
   const [q, setQ] = useState("");
+
+  // If the global filter removes the priority we're currently filtering on,
+  // fall back to "all" so the table doesn't lock the user out of their own data.
+  useEffect(() => {
+    if (
+      priorityFilter !== "all" &&
+      enabledPriorities &&
+      !enabledPriorities.has(priorityFilter)
+    ) {
+      setPriorityFilter("all");
+    }
+  }, [priorityFilter, enabledPriorities]);
 
   const filtered = useMemo(() => {
     let list = rows;
@@ -64,6 +84,9 @@ export function TriageTable({
       );
     if (filter === "escalate") list = list.filter((r) => r.recommendation === "escalate");
     if (filter === "late") list = list.filter((r) => r.slaStatus === "late" || r.slaStatus === "at-risk");
+    if (priorityFilter !== "all") {
+      list = list.filter((r) => r.currentPriority === priorityFilter);
+    }
     if (q.trim()) {
       const needle = q.toLowerCase();
       list = list.filter(
@@ -97,7 +120,7 @@ export function TriageTable({
       return sortDir === "asc" ? -cmp : cmp;
     });
     return sorted;
-  }, [rows, sortKey, sortDir, filter, q]);
+  }, [rows, sortKey, sortDir, filter, priorityFilter, q]);
 
   const counts = useMemo(
     () => ({
@@ -111,9 +134,20 @@ export function TriageTable({
       late: rows.filter(
         (r) => r.slaStatus === "late" || r.slaStatus === "at-risk",
       ).length,
+      P0: rows.filter((r) => r.currentPriority === "P0").length,
+      P1: rows.filter((r) => r.currentPriority === "P1").length,
+      P2: rows.filter((r) => r.currentPriority === "P2").length,
+      P3: rows.filter((r) => r.currentPriority === "P3").length,
     }),
     [rows],
   );
+
+  const PRIORITY_CHIP_CLASS: Record<Priority, string> = {
+    P0: "border-danger/40 bg-danger/10 text-danger",
+    P1: "border-warning/40 bg-warning/10 text-warning",
+    P2: "border-accent/40 bg-accent/10 text-accent",
+    P3: "border-success/40 bg-success/10 text-success",
+  };
 
   function clickSort(key: SortKey) {
     if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -148,6 +182,30 @@ export function TriageTable({
               <Clock className="h-3 w-3" /> Late SLA <span className="text-fg-subtle">· {counts.late}</span>
             </FilterChip>
           )}
+          <span className="mx-1 h-4 w-px bg-border self-center" aria-hidden />
+          <FilterChip
+            active={priorityFilter === "all"}
+            onClick={() => setPriorityFilter("all")}
+          >
+            All priorities
+          </FilterChip>
+          {(["P0", "P1", "P2", "P3"] as Priority[]).map((p) => {
+            // Hide priorities the dashboard-wide filter has turned off.
+            if (enabledPriorities && !enabledPriorities.has(p)) return null;
+            const count = counts[p];
+            if (count === 0 && priorityFilter !== p) return null;
+            return (
+              <FilterChip
+                key={p}
+                active={priorityFilter === p}
+                onClick={() => setPriorityFilter(p)}
+                className={priorityFilter === p ? PRIORITY_CHIP_CLASS[p] : undefined}
+              >
+                <span className="font-mono font-semibold">{p}</span>
+                <span className="text-fg-subtle">· {count}</span>
+              </FilterChip>
+            );
+          })}
         </div>
         <div className="ml-auto">
           <input
@@ -280,10 +338,12 @@ function FilterChip({
   active,
   onClick,
   children,
+  className,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
     <button
@@ -291,7 +351,7 @@ function FilterChip({
       className={cn(
         "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium border transition-colors",
         active
-          ? "border-accent/50 bg-accent/15 text-accent"
+          ? className ?? "border-accent/50 bg-accent/15 text-accent"
           : "border-border bg-bg-muted text-fg-muted hover:text-fg",
       )}
     >

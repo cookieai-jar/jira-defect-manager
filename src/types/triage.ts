@@ -114,6 +114,8 @@ export interface ResolvedTicketRef {
   resolved: string | null;
   assignee: string | null;
   url: string;
+  priority: string | null;
+  status: string | null;
 }
 
 export interface P0Summary {

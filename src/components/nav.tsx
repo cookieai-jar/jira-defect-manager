@@ -11,6 +11,7 @@ import {
   ClipboardList,
   ShieldAlert,
   BookOpen,
+  Beaker,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -26,6 +27,7 @@ interface NavItem {
 const ALL_ITEMS: NavItem[] = [
   { href: "/", label: "Customer Dashboard", icon: LayoutDashboard, scope: "eac" },
   { href: "/fr", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
+  { href: "/fr/poc", label: "FR PM Dashboard (POC)", icon: Beaker, scope: "fr" },
   { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
   { href: "/p0", label: "White-glove Customers", icon: Star },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },

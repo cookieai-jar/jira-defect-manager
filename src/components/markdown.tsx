@@ -2,6 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { transformChildrenWithChips } from "@/components/jira-chips";
 
 function toMarkdownString(input: unknown): string {
   if (typeof input === "string") return input;
@@ -64,6 +65,16 @@ export function Markdown({
             >
               {children}
             </a>
+          ),
+          // Wrap [Pn] and [status] tokens in colored chips wherever they
+          // appear inline. We override the elements most likely to host
+          // such tokens; nested inline tags (strong, em) keep their structure
+          // but their text-node siblings get the chip treatment too.
+          li: ({ children, ...props }) => (
+            <li {...props}>{transformChildrenWithChips(children, "li-")}</li>
+          ),
+          p: ({ children, ...props }) => (
+            <p {...props}>{transformChildrenWithChips(children, "p-")}</p>
           ),
         }}
       >

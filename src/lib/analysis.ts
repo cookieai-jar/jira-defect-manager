@@ -277,12 +277,15 @@ CRITICAL RULES:
 
 Output one JSON object with these fields, all in GitHub-flavored markdown:
 
-- weeklyProgress: One bullet per ticket (max 10 tickets). Lead each bullet with
-  the ticket key bolded, then a 1-3 sentence consolidated summary of what
-  moved this week (or "no movement" if nothing did). Example:
-  "- **EAC-61004 (Azure token expires)**: Escalated to P1 on 2026-05-18 after
-  customer pressed for update; reassigning since original investigator OOO.
-  Root cause still suspected to be \\$skiptoken invalidation."
+- weeklyProgress: One bullet per ticket (max 10 tickets), ORDERED BY CURRENT
+  PRIORITY DESCENDING (P0 first, then P1, P2, P3 — use the ticket's
+  current "priority" field). Lead each bullet with the ticket key bolded,
+  IMMEDIATELY followed by inline tags for the current priority and current
+  status: \`[Pn]\` and \`[<status>]\`. Then a 1-3 sentence consolidated
+  summary of what moved this week (or "no movement" if nothing did). Example:
+  "- **EAC-61004** [P1] [Under investigation]: Escalated to P1 on 2026-05-18
+  after customer pressed for update; reassigning since original investigator
+  OOO. Root cause still suspected to be \\$skiptoken invalidation."
 - dailyTracker: A markdown checklist with EXACTLY ONE item per ticket. Format:
   "- [ ] <TICKET-KEY> — <one-line action> (owner: <name>)"
 - resolutionPlan: A concrete plan (markdown) to fully resolve this customer's
@@ -316,11 +319,14 @@ CRITICAL RULES:
 
 Output one JSON object with these fields, all in GitHub-flavored markdown:
 
-- weeklyProgress: One bullet per FR (max 10). Lead with the ticket key bolded,
-  then 1-3 sentences on what moved this week from a product-delivery
-  standpoint: PRD updates, scoping calls, design progress, eng investigation,
-  customer validation, decisions made, roadmap placement. Use "no movement
-  this week" when nothing changed. Do NOT frame as bug fixes.
+- weeklyProgress: One bullet per FR (max 10), ORDERED BY CURRENT PRIORITY
+  DESCENDING (P0 first, then P1, P2, P3). Lead with the ticket key bolded,
+  IMMEDIATELY followed by inline tags for the current priority and current
+  status: \`[Pn]\` and \`[<status>]\`. Then 1-3 sentences on what moved this
+  week from a product-delivery standpoint: PRD updates, scoping calls, design
+  progress, eng investigation, customer validation, decisions made, roadmap
+  placement. Use "no movement this week" when nothing changed. Do NOT frame
+  as bug fixes.
 - dailyTracker: Checklist with EXACTLY ONE item per FR. Format:
   "- [ ] <TICKET-KEY> — <next product/delivery action> (owner: <PM or eng name>)"
 - resolutionPlan: A concrete DELIVERY PLAN in markdown. Use one

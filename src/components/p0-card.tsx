@@ -1,14 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardBody } from "@/components/ui/card";
 import { HealthBadge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
+import { PriorityChip, StatusChip } from "@/components/jira-chips";
 import { cn, formatDate } from "@/lib/utils";
+import { priorityFromString } from "@/lib/priority";
 import type { P0Summary, ResolvedTicketRef } from "@/types/triage";
 import { ChevronDown, ExternalLink } from "lucide-react";
 
 type Tab = "weekly" | "daily" | "plan" | "resolved";
+
+function priorityRank(p: string | null | undefined): number {
+  const canonical = priorityFromString(p);
+  if (canonical === "P0") return 0;
+  if (canonical === "P1") return 1;
+  if (canonical === "P2") return 2;
+  if (canonical === "P3") return 3;
+  return 999;
+}
 
 export function P0Card({
   summary,
@@ -118,7 +129,18 @@ function ResolvedTicketsList({
   tickets: ResolvedTicketRef[];
   jiraBaseUrl?: string;
 }) {
-  if (tickets.length === 0) {
+  const sorted = useMemo(() => {
+    return [...tickets].sort((a, b) => {
+      const pr = priorityRank(a.priority) - priorityRank(b.priority);
+      if (pr !== 0) return pr;
+      // Tiebreaker: most recently resolved first
+      const ad = a.resolved ? new Date(a.resolved).getTime() : 0;
+      const bd = b.resolved ? new Date(b.resolved).getTime() : 0;
+      return bd - ad;
+    });
+  }, [tickets]);
+
+  if (sorted.length === 0) {
     return (
       <p className="text-sm text-fg-muted py-2">
         No tickets resolved for this customer in the past 90 days.
@@ -127,12 +149,13 @@ function ResolvedTicketsList({
   }
   return (
     <ul className="divide-y divide-border -mx-2">
-      {tickets.map((t) => {
+      {sorted.map((t) => {
         const href = t.url || (jiraBaseUrl ? `${jiraBaseUrl}/browse/${t.key}` : undefined);
+        const canonical = priorityFromString(t.priority);
         return (
           <li key={t.key} className="px-2 py-2">
             <div className="flex items-baseline justify-between gap-2">
-              <div className="flex items-baseline gap-2 min-w-0">
+              <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
                 {href ? (
                   <a
                     href={href}
@@ -146,6 +169,8 @@ function ResolvedTicketsList({
                 ) : (
                   <span className="font-mono text-xs text-accent">{t.key}</span>
                 )}
+                {canonical && <PriorityChip priority={canonical} />}
+                {t.status && <StatusChip status={t.status} />}
                 <span className="text-sm text-fg-muted truncate">{t.summary}</span>
               </div>
               {t.resolved && (

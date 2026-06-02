@@ -9,13 +9,75 @@ import { TriageTable } from "@/components/triage-table";
 import { TicketDrawer } from "@/components/ticket-drawer";
 import { TrendChart } from "@/components/trend-chart";
 import { PriorityReview } from "@/components/priority-review";
-import { CheckCircle2, MessageSquare, AlertTriangle, Inbox, Clock } from "lucide-react";
-import type { JiraIssue, PriorityDecision, Scope, TriageReport } from "@/types/triage";
+import {
+  CheckCircle2,
+  MessageSquare,
+  AlertTriangle,
+  Inbox,
+  Clock,
+  Filter,
+  Info,
+} from "lucide-react";
+import type {
+  JiraIssue,
+  P0Summary,
+  Priority,
+  PriorityDecision,
+  ResolvedTicketRef,
+  Scope,
+  TicketAnalysis,
+  TriageReport,
+} from "@/types/triage";
 import { SCOPE_LABELS, scopeHasP0 } from "@/types/triage";
+import { priorityFromString } from "@/lib/priority";
+import { cn } from "@/lib/utils";
 
 interface Props {
   scope: Scope;
   title: string;
+}
+
+type TogglePriority = "P0" | "P1" | "P2";
+const TOGGLE_PRIORITIES: readonly TogglePriority[] = ["P0", "P1", "P2"] as const;
+const STORAGE_KEY = "customer-dashboard-priorities";
+const DEFAULT_STATE: Record<TogglePriority, boolean> = { P0: true, P1: true, P2: false };
+
+function loadPriorityState(): Record<TogglePriority, boolean> {
+  if (typeof window === "undefined") return { ...DEFAULT_STATE };
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_STATE };
+    const parsed = JSON.parse(raw) as Partial<Record<TogglePriority, boolean>>;
+    return {
+      P0: parsed.P0 ?? DEFAULT_STATE.P0,
+      P1: parsed.P1 ?? DEFAULT_STATE.P1,
+      P2: parsed.P2 ?? DEFAULT_STATE.P2,
+    };
+  } catch {
+    return { ...DEFAULT_STATE };
+  }
+}
+
+function savePriorityState(state: Record<TogglePriority, boolean>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    /* quota / disabled storage — ignore */
+  }
+}
+
+/**
+ * Unrated tickets (no `currentPriority`) are always visible. P3 is never
+ * visible. Otherwise the priority must be in the active set.
+ */
+function makePriorityVisible(active: Record<TogglePriority, boolean>) {
+  return (p: Priority | string | null | undefined): boolean => {
+    const canonical = priorityFromString(p ?? null);
+    if (canonical == null) return true;
+    if (canonical === "P3") return false;
+    return active[canonical as TogglePriority] === true;
+  };
 }
 
 export function DashboardView({ scope, title }: Props) {
@@ -25,6 +87,9 @@ export function DashboardView({ scope, title }: Props) {
   const [jiraBaseUrl, setJiraBaseUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [priorityActive, setPriorityActive] = useState<Record<TogglePriority, boolean>>(
+    () => loadPriorityState(),
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -52,6 +117,22 @@ export function DashboardView({ scope, title }: Props) {
     refresh();
   }, [refresh]);
 
+  function togglePriority(p: TogglePriority) {
+    setPriorityActive((prev) => {
+      const next = { ...prev, [p]: !prev[p] };
+      savePriorityState(next);
+      return next;
+    });
+  }
+
+  const filterApplies = scope === "eac";
+
+  // Priority visibility test, conditional on whether the filter applies to this scope.
+  const priorityVisible = useMemo(() => {
+    if (!filterApplies) return () => true;
+    return makePriorityVisible(priorityActive);
+  }, [filterApplies, priorityActive]);
+
   const rows = useMemo(() => {
     if (!report) return [];
     const map = new Map(issues.map((i) => [i.key, i]));
@@ -63,7 +144,62 @@ export function DashboardView({ scope, title }: Props) {
       .filter((x): x is NonNullable<typeof x> => Boolean(x));
   }, [report, issues]);
 
+  const filteredAnalyses = useMemo<TicketAnalysis[]>(() => {
+    if (!report) return [];
+    if (!filterApplies) return report.ticketAnalyses;
+    return report.ticketAnalyses.filter((a) => priorityVisible(a.currentPriority));
+  }, [report, filterApplies, priorityVisible]);
+
+  const filteredRows = useMemo(() => {
+    if (!filterApplies) return rows;
+    return rows.filter((r) => priorityVisible(r.currentPriority));
+  }, [rows, filterApplies, priorityVisible]);
+
+  const filteredKeySet = useMemo(
+    () => new Set(filteredAnalyses.map((a) => a.issueKey)),
+    [filteredAnalyses],
+  );
+
+  const filteredCloseCandidates = useMemo(() => {
+    if (!report) return [];
+    if (!filterApplies) return report.closeCandidates;
+    return report.closeCandidates.filter((k) => filteredKeySet.has(k));
+  }, [report, filterApplies, filteredKeySet]);
+
+  const filteredPingCandidates = useMemo(() => {
+    if (!report) return [];
+    if (!filterApplies) return report.pingCandidates;
+    return report.pingCandidates.filter((p) => filteredKeySet.has(p.issueKey));
+  }, [report, filterApplies, filteredKeySet]);
+
+  const filteredSummaries = useMemo<P0Summary[]>(() => {
+    if (!report) return [];
+    if (!filterApplies) return report.p0Summaries;
+    const analysisByKey = new Map(report.ticketAnalyses.map((a) => [a.issueKey, a]));
+    return report.p0Summaries.map((s) => {
+      const openKeys = s.openIssueKeys.filter((k) => {
+        const a = analysisByKey.get(k);
+        return priorityVisible(a?.currentPriority);
+      });
+      const resolved = (s.resolvedTickets ?? []).filter((t: ResolvedTicketRef) =>
+        priorityVisible(t.priority),
+      );
+      return { ...s, openIssueKeys: openKeys, resolvedTickets: resolved };
+    });
+  }, [report, filterApplies, priorityVisible]);
+
   const issueMap = useMemo(() => new Map(issues.map((i) => [i.key, i])), [issues]);
+
+  const enabledPrioritySet = useMemo(() => {
+    const s = new Set<Priority>();
+    if (priorityActive.P0) s.add("P0");
+    if (priorityActive.P1) s.add("P1");
+    if (priorityActive.P2) s.add("P2");
+    return s;
+  }, [priorityActive]);
+
+  const anyPriorityEnabled =
+    priorityActive.P0 || priorityActive.P1 || priorityActive.P2;
 
   return (
     <div className="flex-1 overflow-auto scroll-thin">
@@ -83,178 +219,200 @@ export function DashboardView({ scope, title }: Props) {
         <EmptyState loading={loading} scope={scope} />
       ) : (
         <div className="p-6 space-y-6">
-          <div
-            className={`grid grid-cols-2 ${scope === "eac" ? "md:grid-cols-5" : "md:grid-cols-4"} gap-3`}
-          >
-            <Stat
-              icon={<Inbox className="h-4 w-4" />}
-              label="Tickets analyzed"
-              value={report.ticketAnalyses.length}
+          {filterApplies && (
+            <PriorityFilterBar
+              active={priorityActive}
+              onToggle={togglePriority}
             />
-            <Stat
-              icon={<AlertTriangle className="h-4 w-4 text-danger" />}
-              label="Escalations"
-              value={report.ticketAnalyses.filter((a) => a.recommendation === "escalate").length}
-              tone="danger"
-            />
-            {scope === "eac" && (
-              <Stat
-                icon={<Clock className="h-4 w-4 text-danger" />}
-                label="Late on SLA"
-                value={
-                  report.ticketAnalyses.filter(
-                    (a) => a.slaStatus === "late" || a.slaStatus === "at-risk",
-                  ).length
-                }
-                tone="danger"
-              />
-            )}
-            <Stat
-              icon={<MessageSquare className="h-4 w-4 text-warning" />}
-              label="Need a ping"
-              value={report.pingCandidates.length}
-              tone="warning"
-            />
-            <Stat
-              icon={<CheckCircle2 className="h-4 w-4 text-success" />}
-              label="Close candidates"
-              value={report.closeCandidates.length}
-              tone="success"
-            />
-          </div>
-
-          {scope === "eac" && report.trend && report.trend.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>30-day ticket trend</CardTitle>
-                <span className="text-[11px] text-fg-subtle">
-                  Created vs Resolved within the configured project
-                </span>
-              </CardHeader>
-              <CardBody>
-                <TrendChart data={report.trend} />
-              </CardBody>
-            </Card>
           )}
 
-          {scopeHasP0(scope) && (
-            <section className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold">White-glove customers</h2>
-                <span className="text-xs text-fg-muted">
-                  {report.p0Summaries.length} tracked ·{" "}
-                  <WhiteGloveTicketsLink
-                    summaries={report.p0Summaries}
-                    jiraBaseUrl={jiraBaseUrl}
+          {filterApplies && !anyPriorityEnabled ? (
+            <Card>
+              <CardBody className="text-center text-fg-muted text-sm py-10 space-y-2">
+                <Filter className="h-5 w-5 text-fg-subtle mx-auto" />
+                <p>All priority filters are off.</p>
+                <p className="text-xs text-fg-subtle">
+                  Enable at least one of P0, P1, P2 above to view tickets.
+                </p>
+              </CardBody>
+            </Card>
+          ) : (
+            <>
+              <div
+                className={`grid grid-cols-2 ${scope === "eac" ? "md:grid-cols-5" : "md:grid-cols-4"} gap-3`}
+              >
+                <Stat
+                  icon={<Inbox className="h-4 w-4" />}
+                  label="Tickets analyzed"
+                  value={filteredAnalyses.length}
+                />
+                <Stat
+                  icon={<AlertTriangle className="h-4 w-4 text-danger" />}
+                  label="Escalations"
+                  value={filteredAnalyses.filter((a) => a.recommendation === "escalate").length}
+                  tone="danger"
+                />
+                {scope === "eac" && (
+                  <Stat
+                    icon={<Clock className="h-4 w-4 text-danger" />}
+                    label="Late on SLA"
+                    value={
+                      filteredAnalyses.filter(
+                        (a) => a.slaStatus === "late" || a.slaStatus === "at-risk",
+                      ).length
+                    }
+                    tone="danger"
                   />
-                </span>
+                )}
+                <Stat
+                  icon={<MessageSquare className="h-4 w-4 text-warning" />}
+                  label="Need a ping"
+                  value={filteredPingCandidates.length}
+                  tone="warning"
+                />
+                <Stat
+                  icon={<CheckCircle2 className="h-4 w-4 text-success" />}
+                  label="Close candidates"
+                  value={filteredCloseCandidates.length}
+                  tone="success"
+                />
               </div>
-              {report.p0Summaries.length > 0 ? (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
-                  {report.p0Summaries.map((s) => (
-                    <P0Card key={s.customer} summary={s} jiraBaseUrl={jiraBaseUrl} />
-                  ))}
-                </div>
-              ) : (
+
+              {scope === "eac" && report.trend && report.trend.length > 0 && (
                 <Card>
-                  <CardBody className="text-center text-fg-muted text-sm py-8 space-y-2">
-                    <p>
-                      No white-glove customers matched any open {SCOPE_LABELS[scope]} tickets yet.
-                    </p>
-                    <p className="text-xs text-fg-subtle">
-                      Either no customer&apos;s JQL fragment matches a {SCOPE_LABELS[scope]} ticket, or
-                      no white-glove customers are configured on the{" "}
-                      <a href="/p0" className="text-accent underline">
-                        White-glove Customers
-                      </a>{" "}
-                      page.
-                    </p>
+                  <CardHeader>
+                    <CardTitle>30-day ticket trend</CardTitle>
+                    <span className="text-[11px] text-fg-subtle">
+                      Created vs Resolved within the configured project · all priorities
+                    </span>
+                  </CardHeader>
+                  <CardBody>
+                    <TrendChart data={report.trend} />
                   </CardBody>
                 </Card>
               )}
-            </section>
-          )}
 
-          <section>
-            <TriageTable
-              rows={rows}
-              onSelect={setSelected}
-              showSla={scope === "eac"}
-            />
-          </section>
+              {scopeHasP0(scope) && (
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-sm font-semibold">White-glove customers</h2>
+                    <span className="text-xs text-fg-muted">
+                      {filteredSummaries.length} tracked
+                    </span>
+                    <WhiteGloveTicketsLinks
+                      analyses={filteredAnalyses}
+                      jiraBaseUrl={jiraBaseUrl}
+                    />
+                  </div>
+                  {filteredSummaries.length > 0 ? (
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
+                      {filteredSummaries.map((s) => (
+                        <P0Card key={s.customer} summary={s} jiraBaseUrl={jiraBaseUrl} />
+                      ))}
+                    </div>
+                  ) : (
+                    <Card>
+                      <CardBody className="text-center text-fg-muted text-sm py-8 space-y-2">
+                        <p>
+                          No white-glove customers matched any open {SCOPE_LABELS[scope]} tickets yet.
+                        </p>
+                        <p className="text-xs text-fg-subtle">
+                          Either no customer&apos;s JQL fragment matches a {SCOPE_LABELS[scope]} ticket, or
+                          no white-glove customers are configured on the{" "}
+                          <a href="/p0" className="text-accent underline">
+                            White-glove Customers
+                          </a>{" "}
+                          page.
+                        </p>
+                      </CardBody>
+                    </Card>
+                  )}
+                </section>
+              )}
 
-          <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-success" /> Close candidates
-                </CardTitle>
-                <Badge>{report.closeCandidates.length}</Badge>
-              </CardHeader>
-              <CardBody className="max-h-72 overflow-auto scroll-thin">
-                {report.closeCandidates.length === 0 ? (
-                  <p className="text-fg-muted text-sm">Nothing to close right now.</p>
-                ) : (
-                  <ul className="space-y-1.5 text-sm">
-                    {report.closeCandidates.map((k) => {
-                      const issue = issueMap.get(k);
-                      return (
-                        <li
-                          key={k}
-                          className="flex items-baseline gap-2 cursor-pointer hover:bg-bg-muted/60 rounded px-2 py-1 -mx-2"
-                          onClick={() => setSelected(k)}
-                        >
-                          <span className="font-mono text-xs text-accent">{k}</span>
-                          <span className="text-fg-muted truncate">{issue?.summary ?? ""}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </CardBody>
-            </Card>
+              <section>
+                <TriageTable
+                  rows={filteredRows}
+                  onSelect={setSelected}
+                  showSla={scope === "eac"}
+                  enabledPriorities={filterApplies ? enabledPrioritySet : undefined}
+                />
+              </section>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4 text-warning" /> Needs a ping
-                </CardTitle>
-                <Badge>{report.pingCandidates.length}</Badge>
-              </CardHeader>
-              <CardBody className="max-h-72 overflow-auto scroll-thin">
-                {report.pingCandidates.length === 0 ? (
-                  <p className="text-fg-muted text-sm">Inbox zero on pings.</p>
-                ) : (
-                  <ul className="space-y-1.5 text-sm">
-                    {report.pingCandidates.map((p) => {
-                      const issue = issueMap.get(p.issueKey);
-                      return (
-                        <li
-                          key={p.issueKey}
-                          className="flex items-baseline gap-2 cursor-pointer hover:bg-bg-muted/60 rounded px-2 py-1 -mx-2"
-                          onClick={() => setSelected(p.issueKey)}
-                        >
-                          <span className="font-mono text-xs text-accent">{p.issueKey}</span>
-                          <Badge className="border-warning/40 bg-warning/10 text-warning border">
-                            ping {p.target}
-                          </Badge>
-                          <span className="text-fg-muted truncate">{issue?.summary ?? ""}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </CardBody>
-            </Card>
-          </section>
+              <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-success" /> Close candidates
+                    </CardTitle>
+                    <Badge>{filteredCloseCandidates.length}</Badge>
+                  </CardHeader>
+                  <CardBody className="max-h-72 overflow-auto scroll-thin">
+                    {filteredCloseCandidates.length === 0 ? (
+                      <p className="text-fg-muted text-sm">Nothing to close right now.</p>
+                    ) : (
+                      <ul className="space-y-1.5 text-sm">
+                        {filteredCloseCandidates.map((k) => {
+                          const issue = issueMap.get(k);
+                          return (
+                            <li
+                              key={k}
+                              className="flex items-baseline gap-2 cursor-pointer hover:bg-bg-muted/60 rounded px-2 py-1 -mx-2"
+                              onClick={() => setSelected(k)}
+                            >
+                              <span className="font-mono text-xs text-accent">{k}</span>
+                              <span className="text-fg-muted truncate">{issue?.summary ?? ""}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </CardBody>
+                </Card>
 
-          {scope === "eac" && (
-            <PriorityReview
-              rows={rows}
-              decisions={decisions}
-              onSelect={setSelected}
-              onDecisionsChanged={refreshDecisions}
-            />
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4 text-warning" /> Needs a ping
+                    </CardTitle>
+                    <Badge>{filteredPingCandidates.length}</Badge>
+                  </CardHeader>
+                  <CardBody className="max-h-72 overflow-auto scroll-thin">
+                    {filteredPingCandidates.length === 0 ? (
+                      <p className="text-fg-muted text-sm">Inbox zero on pings.</p>
+                    ) : (
+                      <ul className="space-y-1.5 text-sm">
+                        {filteredPingCandidates.map((p) => {
+                          const issue = issueMap.get(p.issueKey);
+                          return (
+                            <li
+                              key={p.issueKey}
+                              className="flex items-baseline gap-2 cursor-pointer hover:bg-bg-muted/60 rounded px-2 py-1 -mx-2"
+                              onClick={() => setSelected(p.issueKey)}
+                            >
+                              <span className="font-mono text-xs text-accent">{p.issueKey}</span>
+                              <Badge className="border-warning/40 bg-warning/10 text-warning border">
+                                ping {p.target}
+                              </Badge>
+                              <span className="text-fg-muted truncate">{issue?.summary ?? ""}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </CardBody>
+                </Card>
+              </section>
+
+              {scope === "eac" && (
+                <PriorityReview
+                  rows={filteredRows}
+                  decisions={decisions}
+                  onSelect={setSelected}
+                  onDecisionsChanged={refreshDecisions}
+                />
+              )}
+            </>
           )}
         </div>
       )}
@@ -264,30 +422,109 @@ export function DashboardView({ scope, title }: Props) {
   );
 }
 
-function WhiteGloveTicketsLink({
-  summaries,
+const PRIORITY_PILL_ACTIVE: Record<TogglePriority, string> = {
+  P0: "border-danger/50 bg-danger/15 text-danger",
+  P1: "border-warning/50 bg-warning/15 text-warning",
+  P2: "border-accent/50 bg-accent/15 text-accent",
+};
+
+function PriorityFilterBar({
+  active,
+  onToggle,
+}: {
+  active: Record<TogglePriority, boolean>;
+  onToggle: (p: TogglePriority) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-fg-muted">
+        <Filter className="h-3 w-3" /> Priority filter
+      </span>
+      {TOGGLE_PRIORITIES.map((p) => {
+        const on = active[p];
+        return (
+          <button
+            key={p}
+            onClick={() => onToggle(p)}
+            aria-pressed={on}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-mono font-semibold border transition-colors",
+              on
+                ? PRIORITY_PILL_ACTIVE[p]
+                : "border-border bg-bg-muted text-fg-subtle hover:text-fg-muted",
+            )}
+            title={on ? `Hide ${p} tickets` : `Show ${p} tickets`}
+          >
+            <span
+              className={cn(
+                "inline-block h-1.5 w-1.5 rounded-full",
+                on ? "bg-current" : "bg-fg-subtle/50",
+              )}
+            />
+            {p}
+          </button>
+        );
+      })}
+      <span className="inline-flex items-center gap-1 text-[10px] text-fg-subtle">
+        <Info className="h-3 w-3" />
+        Unrated tickets always shown · P3 always hidden
+      </span>
+    </div>
+  );
+}
+
+function WhiteGloveTicketsLinks({
+  analyses,
   jiraBaseUrl,
 }: {
-  summaries: TriageReport["p0Summaries"];
+  analyses: TriageReport["ticketAnalyses"];
   jiraBaseUrl: string;
 }) {
-  const allKeys = summaries.flatMap((s) => s.openIssueKeys);
-  const count = allKeys.length;
-  if (count === 0 || !jiraBaseUrl) {
-    return <>{count} tickets</>;
+  // Group open white-glove tickets by current JIRA priority.
+  const PRIORITY_ORDER: Array<"P0" | "P1" | "P2" | "P3"> = ["P0", "P1", "P2", "P3"];
+  const PRIORITY_STYLE: Record<string, string> = {
+    P0: "text-danger hover:text-danger decoration-danger/40 hover:decoration-danger",
+    P1: "text-warning hover:text-warning decoration-warning/40 hover:decoration-warning",
+    P2: "text-accent hover:text-accent-hover decoration-accent/40 hover:decoration-accent",
+    P3: "text-success hover:text-success decoration-success/40 hover:decoration-success",
+  };
+  const byPriority = new Map<string, string[]>();
+  for (const a of analyses) {
+    if (!a.isP0Customer) continue;
+    if (a.status === "resolved") continue;
+    if (!a.currentPriority) continue;
+    const arr = byPriority.get(a.currentPriority) ?? [];
+    arr.push(a.issueKey);
+    byPriority.set(a.currentPriority, arr);
   }
-  const jql = `key in (${allKeys.join(",")}) ORDER BY priority DESC, updated DESC`;
-  const href = `${jiraBaseUrl}/issues/?jql=${encodeURIComponent(jql)}`;
+  const present = PRIORITY_ORDER.filter((p) => (byPriority.get(p)?.length ?? 0) > 0);
+  if (present.length === 0 || !jiraBaseUrl) {
+    const total = Array.from(byPriority.values()).reduce((n, v) => n + v.length, 0);
+    return <span className="text-xs text-fg-muted">· {total} tickets</span>;
+  }
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="text-accent hover:text-accent-hover underline decoration-accent/40 hover:decoration-accent"
-      title="Open all open white-glove customer tickets in JIRA"
-    >
-      {count} tickets
-    </a>
+    <span className="text-xs text-fg-muted inline-flex items-center gap-1.5 flex-wrap">
+      {present.map((p, i) => {
+        const keys = byPriority.get(p)!;
+        const jql = `key in (${keys.join(",")}) ORDER BY priority DESC, updated DESC`;
+        const href = `${jiraBaseUrl}/issues/?jql=${encodeURIComponent(jql)}`;
+        return (
+          <span key={p}>
+            {i === 0 && <span className="text-fg-subtle">· </span>}
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className={`underline ${PRIORITY_STYLE[p]}`}
+              title={`Open the ${keys.length} ${p} white-glove ticket${keys.length === 1 ? "" : "s"} in JIRA`}
+            >
+              <span className="font-mono font-semibold">{keys.length} {p}</span>
+            </a>
+            {i < present.length - 1 && <span className="text-fg-subtle"> · </span>}
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
