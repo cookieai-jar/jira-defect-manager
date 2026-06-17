@@ -11,7 +11,7 @@ import {
   ClipboardList,
   ShieldAlert,
   BookOpen,
-  Beaker,
+  Boxes,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -22,13 +22,15 @@ interface NavItem {
   icon: typeof LayoutDashboard;
   /** If set, the item is shown only when config.dashboards[scope] is true. */
   scope?: Scope;
+  /** If set, the item is shown only when config[<flag>] is not false. */
+  flag?: "siDashboard";
 }
 
 const ALL_ITEMS: NavItem[] = [
   { href: "/", label: "Customer Dashboard", icon: LayoutDashboard, scope: "eac" },
-  { href: "/fr", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
-  { href: "/fr/poc", label: "FR PM Dashboard (POC)", icon: Beaker, scope: "fr" },
+  { href: "/fr/poc", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
+  { href: "/integrations", label: "Strategic Integrations", icon: Boxes, flag: "siDashboard" },
   { href: "/p0", label: "White-glove Customers", icon: Star },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -57,9 +59,10 @@ export function Nav() {
   }, [pathname]);
 
   const items = ALL_ITEMS.filter((item) => {
-    if (!item.scope) return true;
     if (!config) return true; // before config loads, show everything
-    return config.dashboards?.[item.scope] !== false;
+    if (item.scope) return config.dashboards?.[item.scope] !== false;
+    if (item.flag) return config[item.flag] !== false;
+    return true;
   });
 
   return (

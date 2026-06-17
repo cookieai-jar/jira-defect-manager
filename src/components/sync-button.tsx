@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Loader2 } from "lucide-react";
 import type { SyncState } from "@/lib/sync-state";
@@ -10,9 +10,15 @@ import { SCOPE_LABELS } from "@/types/triage";
 interface Props {
   scope: Scope;
   onSynced?: () => void;
+  /**
+   * When set, the dashboard auto-triggers a full sync + re-analysis on this
+   * interval (ms) for as long as it stays open. Background runs are silent
+   * (no failure alert) and are skipped while a sync is already in flight.
+   */
+  autoRefreshMs?: number;
 }
 
-export function SyncButton({ scope, onSynced }: Props) {
+export function SyncButton({ scope, onSynced, autoRefreshMs }: Props) {
   const [state, setState] = useState<SyncState | null>(null);
   const [polling, setPolling] = useState(false);
 
@@ -38,15 +44,30 @@ export function SyncButton({ scope, onSynced }: Props) {
     };
   }, [polling, onSynced, scope]);
 
-  async function start() {
+  async function start(silent = false) {
     setPolling(true);
     const res = await fetch(`/api/sync?scope=${scope}`, { method: "POST" });
     if (!res.ok && res.status !== 202) {
       const err = await res.json().catch(() => ({}));
-      alert(`Sync failed: ${err.error ?? res.statusText}`);
+      if (!silent) alert(`Sync failed: ${err.error ?? res.statusText}`);
       setPolling(false);
     }
   }
+
+  // Hourly (or configured) auto-sync. A stable interval reads the latest
+  // `start`/busy state through refs so the timer never resets on re-render.
+  const startRef = useRef(start);
+  startRef.current = start;
+  const busyRef = useRef(false);
+  busyRef.current = polling || (state?.running ?? false);
+
+  useEffect(() => {
+    if (!autoRefreshMs) return;
+    const id = setInterval(() => {
+      if (!busyRef.current) startRef.current(true);
+    }, autoRefreshMs);
+    return () => clearInterval(id);
+  }, [autoRefreshMs]);
 
   const running = state?.running ?? false;
   const pct = state?.total ? Math.round((state.done / state.total) * 100) : 0;
@@ -70,10 +91,13 @@ export function SyncButton({ scope, onSynced }: Props) {
       ) : state?.finishedAt ? (
         <span className="text-[11px] text-fg-subtle">
           Last {SCOPE_LABELS[scope]} sync: {new Date(state.finishedAt).toLocaleString()}
+          {autoRefreshMs && <span className="text-fg-subtle"> · auto-syncs hourly</span>}
           {state.error && <span className="text-danger ml-2">· {state.error}</span>}
         </span>
+      ) : autoRefreshMs ? (
+        <span className="text-[11px] text-fg-subtle">auto-syncs hourly</span>
       ) : null}
-      <Button onClick={start} disabled={running}>
+      <Button onClick={() => start()} disabled={running}>
         {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
         {running ? "Syncing…" : `Sync ${SCOPE_LABELS[scope]} from JIRA`}
       </Button>

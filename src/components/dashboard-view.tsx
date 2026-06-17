@@ -184,7 +184,14 @@ export function DashboardView({ scope, title }: Props) {
       const resolved = (s.resolvedTickets ?? []).filter((t: ResolvedTicketRef) =>
         priorityVisible(t.priority),
       );
-      return { ...s, openIssueKeys: openKeys, resolvedTickets: resolved };
+      // A white-glove customer with no open P1 ticket is healthy by definition,
+      // regardless of what the model inferred. Based on the customer's real open
+      // tickets, not the filtered view.
+      const hasOpenP1 = s.openIssueKeys.some(
+        (k) => analysisByKey.get(k)?.currentPriority === "P1",
+      );
+      const health: P0Summary["health"] = hasOpenP1 ? s.health : "green";
+      return { ...s, openIssueKeys: openKeys, resolvedTickets: resolved, health };
     });
   }, [report, filterApplies, priorityVisible]);
 
@@ -204,15 +211,8 @@ export function DashboardView({ scope, title }: Props) {
   return (
     <div className="flex-1 overflow-auto scroll-thin">
       <header className="px-6 h-14 border-b border-border flex items-center justify-between sticky top-0 z-10 bg-bg/90 backdrop-blur">
-        <div>
-          <h1 className="text-lg font-semibold">{title}</h1>
-          {report && (
-            <p className="text-[11px] text-fg-subtle">
-              Generated {new Date(report.generatedAt).toLocaleString()}
-            </p>
-          )}
-        </div>
-        <SyncButton scope={scope} onSynced={refresh} />
+        <h1 className="text-lg font-semibold">{title}</h1>
+        <SyncButton scope={scope} onSynced={refresh} autoRefreshMs={3_600_000} />
       </header>
 
       {!report ? (
@@ -336,6 +336,9 @@ export function DashboardView({ scope, title }: Props) {
                   onSelect={setSelected}
                   showSla={scope === "eac"}
                   enabledPriorities={filterApplies ? enabledPrioritySet : undefined}
+                  flagMissingEpic={scope === "sec"}
+                  showCreated={scope === "sec"}
+                  defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
                 />
               </section>
 
