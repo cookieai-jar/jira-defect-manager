@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sprintPlan, epicOrphans, inFlightAging, type DeliveryRow } from "@/lib/fr-delivery";
+import { sprintPlan, noRoadmapLink, inFlightAging, type DeliveryRow } from "@/lib/fr-delivery";
 import type { JiraIssue, TicketAnalysis } from "@/types/triage";
 
 // --- minimal fixtures -------------------------------------------------------
@@ -99,42 +99,49 @@ describe("sprintPlan", () => {
   });
 });
 
-// --- epicOrphans ------------------------------------------------------------
+// --- noRoadmapLink ----------------------------------------------------------
 
-describe("epicOrphans", () => {
-  it("includes open rows with no epic parent (null or non-Epic parent)", () => {
+describe("noRoadmapLink", () => {
+  it("flags open rows with no parent AND no component", () => {
     const rows = [
-      row({ issueKey: "noParent", issue: { parent: null } }),
+      row({ issueKey: "floating", issue: { parent: null, components: [] } }),
+      // Has a parent (any type) -> structured, not flagged.
       row({
-        issueKey: "storyParent",
-        issue: { parent: { key: "S-1", summary: "story", type: "Story" } },
+        issueKey: "hasParent",
+        issue: { parent: { key: "S-1", summary: "s", type: "Story" }, components: [] },
       }),
-      row({
-        issueKey: "epicParent",
-        issue: { parent: { key: "E-1", summary: "epic", type: "Epic" } },
-      }),
+      // Has a component -> structured, not flagged.
+      row({ issueKey: "hasComponent", issue: { parent: null, components: ["Auth"] } }),
     ];
-    const out = epicOrphans(rows);
-    expect(out.count).toBe(2);
-    expect(out.rows.map((r) => r.issueKey).sort()).toEqual(["noParent", "storyParent"]);
+    const out = noRoadmapLink(rows);
+    expect(out.count).toBe(1);
+    expect(out.rows.map((r) => r.issueKey)).toEqual(["floating"]);
   });
 
-  it("treats Epic parent case-insensitively as attached (not an orphan)", () => {
+  it("does not flag an FR that has only a component (no parent)", () => {
     const rows = [
-      row({ issueKey: "epicLower", issue: { parent: { key: "E-1", summary: "e", type: "epic" } } }),
+      row({ issueKey: "comp", issue: { parent: null, components: ["Integrations"] } }),
     ];
-    expect(epicOrphans(rows).count).toBe(0);
+    expect(noRoadmapLink(rows).count).toBe(0);
   });
 
-  it("excludes resolved rows even when they have no epic", () => {
+  it("ranks flagged rows by demand+value descending", () => {
     const rows = [
-      row({ issueKey: "resolvedOrphan", status: "resolved", issue: { parent: null } }),
+      row({ issueKey: "lo", temperatureScore: 2, severityScore: 2, issue: { parent: null, components: [] } }),
+      row({ issueKey: "hi", temperatureScore: 9, severityScore: 8, issue: { parent: null, components: [] } }),
     ];
-    expect(epicOrphans(rows).count).toBe(0);
+    expect(noRoadmapLink(rows).rows.map((r) => r.issueKey)).toEqual(["hi", "lo"]);
+  });
+
+  it("excludes resolved rows even when unstructured", () => {
+    const rows = [
+      row({ issueKey: "resolved", status: "resolved", issue: { parent: null, components: [] } }),
+    ];
+    expect(noRoadmapLink(rows).count).toBe(0);
   });
 
   it("returns empty for empty input", () => {
-    const out = epicOrphans([]);
+    const out = noRoadmapLink([]);
     expect(out.count).toBe(0);
     expect(out.rows).toEqual([]);
   });
@@ -186,12 +193,12 @@ describe("inFlightAging", () => {
     expect(out.map((a) => a.row.issueKey)).toEqual(["old60", "old30", "old20"]);
   });
 
-  it("uses a default threshold of 14 days", () => {
+  it("uses a default threshold of 30 days (FR cadence, not 14)", () => {
     const rows = [
-      row({ issueKey: "d13", status: "active", issue: { updated: daysAgoIso(13) } }),
-      row({ issueKey: "d15", status: "active", issue: { updated: daysAgoIso(15) } }),
+      row({ issueKey: "d29", status: "active", issue: { updated: daysAgoIso(29) } }),
+      row({ issueKey: "d31", status: "active", issue: { updated: daysAgoIso(31) } }),
     ];
-    expect(inFlightAging(rows).map((a) => a.row.issueKey)).toEqual(["d15"]);
+    expect(inFlightAging(rows).map((a) => a.row.issueKey)).toEqual(["d31"]);
   });
 
   it("returns empty for empty input", () => {

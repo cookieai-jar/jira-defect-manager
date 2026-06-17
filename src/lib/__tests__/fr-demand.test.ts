@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   themeClusters,
-  themeKey,
+  themeTags,
   customerConcentration,
   triageCoverage,
   possibleDuplicates,
@@ -61,77 +61,98 @@ function row(
 
 // --- themeClusters ----------------------------------------------------------
 
-describe("themeKey fallback order", () => {
-  it("prefers components[0] over everything", () => {
+describe("themeTags multi-tag derivation", () => {
+  it("unions all components and all labels, de-duped and trimmed", () => {
     expect(
-      themeKey(
+      themeTags(
         row({
           issue: {
-            components: ["Sync"],
-            labels: ["auth"],
-            parent: { key: "E-1", summary: "Epic Title", type: "Epic" },
+            components: ["Sync", " Auth "],
+            labels: ["auth", "Sync", "okta", "  "],
           },
         }),
       ),
-    ).toBe("Sync");
+      // " Auth " trims to "Auth" (distinct from label "auth"); "Sync" deduped;
+      // empty/whitespace dropped.
+    ).toEqual(["Sync", "Auth", "auth", "okta"]);
   });
 
-  it("falls back to labels[0] when no components", () => {
-    expect(
-      themeKey(
-        row({
-          issue: {
-            components: [],
-            labels: ["auth"],
-            parent: { key: "E-1", summary: "Epic Title", type: "Epic" },
-          },
-        }),
-      ),
-    ).toBe("auth");
-  });
-
-  it("falls back to epic summary only when parent is an Epic", () => {
-    expect(
-      themeKey(
-        row({
-          issue: { parent: { key: "E-1", summary: "Epic Title", type: "Epic" } },
-        }),
-      ),
-    ).toBe("Epic Title");
-    // non-epic parent is ignored -> Uncategorized
-    expect(
-      themeKey(
-        row({
-          issue: { parent: { key: "S-1", summary: "Story Parent", type: "Story" } },
-        }),
-      ),
-    ).toBe("Uncategorized");
-  });
-
-  it("falls back to Uncategorized with nothing", () => {
-    expect(themeKey(row())).toBe("Uncategorized");
+  it("returns Uncategorized when a row has no components and no labels", () => {
+    expect(themeTags(row())).toEqual(["Uncategorized"]);
+    expect(themeTags(row({ issue: { components: [], labels: ["  "] } }))).toEqual([
+      "Uncategorized",
+    ]);
   });
 });
 
 describe("themeClusters", () => {
-  it("groups, averages with 1dp rounding, excludes resolved, sorts", () => {
+  it("a row appears under every tag it carries (2 components + 1 label -> 3 themes)", () => {
+    const rows: DemandRow[] = [
+      row({ issueKey: "A", issue: { components: ["Sync", "Auth"], labels: ["okta"] } }),
+    ];
+    const out = themeClusters(rows);
+    expect(out.openTotal).toBe(1);
+    expect(out.themes.map((t) => t.theme).sort()).toEqual(["Auth", "Sync", "okta"]);
+    // each theme has the single row -> count 1, share 1
+    for (const t of out.themes) {
+      expect(t.count).toBe(1);
+      expect(t.keys).toEqual(["A"]);
+      expect(t.share).toBe(1);
+    }
+  });
+
+  it("groups, averages with 1dp rounding, excludes resolved, sorts, share/openTotal", () => {
     const rows: DemandRow[] = [
       // Sync theme: two rows
       row({ issueKey: "A", temperatureScore: 8, severityScore: 7, issue: { components: ["Sync"] } }),
       row({ issueKey: "B", temperatureScore: 5, severityScore: 6, issue: { components: ["Sync"] } }),
-      // Auth theme: one row
+      // Auth theme: one row (via label)
       row({ issueKey: "C", temperatureScore: 9, severityScore: 9, issue: { labels: ["auth"] } }),
       // resolved -> excluded
       row({ issueKey: "D", status: "resolved", issue: { components: ["Sync"] } }),
     ];
     const out = themeClusters(rows);
-    expect(out.map((c) => c.theme)).toEqual(["Sync", "auth"]); // Sync count 2 first
-    const sync = out[0];
+    expect(out.openTotal).toBe(3);
+    expect(out.uncategorizedCount).toBe(0);
+    expect(out.themes.map((c) => c.theme)).toEqual(["Sync", "auth"]); // Sync count 2 first
+    const sync = out.themes[0];
     expect(sync.count).toBe(2);
     expect(sync.keys).toEqual(["A", "B"]); // D excluded
     expect(sync.avgDemand).toBe(6.5); // (8+5)/2
     expect(sync.avgValue).toBe(6.5); // (7+6)/2
-    expect(out[1].avgDemand).toBe(9);
+    expect(sync.share).toBeCloseTo(2 / 3, 5);
+    expect(out.themes[1].avgDemand).toBe(9);
+    expect(out.themes[1].share).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("counts a no-tag open row as Uncategorized", () => {
+    const rows: DemandRow[] = [
+      row({ issueKey: "A", issue: { components: ["Sync"] } }),
+      row({ issueKey: "B" }), // no tags
+    ];
+    const out = themeClusters(rows);
+    expect(out.openTotal).toBe(2);
+    expect(out.uncategorizedCount).toBe(1);
+    const unc = out.themes.find((t) => t.theme === "Uncategorized");
+    expect(unc?.count).toBe(1);
+    expect(unc?.keys).toEqual(["B"]);
+  });
+
+  it("flags tooGeneric when share > 0.4", () => {
+    const rows: DemandRow[] = [
+      row({ issueKey: "A", issue: { components: ["Common"] } }),
+      row({ issueKey: "B", issue: { components: ["Common"] } }),
+      row({ issueKey: "C", issue: { components: ["Common", "Rare"] } }),
+      row({ issueKey: "D", issue: { components: ["Niche"] } }),
+      row({ issueKey: "E", issue: { components: ["Niche"] } }),
+    ];
+    const out = themeClusters(rows);
+    const common = out.themes.find((t) => t.theme === "Common");
+    const rare = out.themes.find((t) => t.theme === "Rare");
+    expect(common?.count).toBe(3); // 3/5 = 0.6 > 0.4
+    expect(common?.tooGeneric).toBe(true);
+    expect(rare?.count).toBe(1); // 1/5 = 0.2
+    expect(rare?.tooGeneric).toBe(false);
   });
 
   it("breaks count ties by avgDemand desc", () => {
@@ -140,7 +161,7 @@ describe("themeClusters", () => {
       row({ issueKey: "B", temperatureScore: 9, issue: { components: ["Y"] } }),
     ];
     const out = themeClusters(rows);
-    expect(out.map((c) => c.theme)).toEqual(["Y", "X"]);
+    expect(out.themes.map((c) => c.theme)).toEqual(["Y", "X"]);
   });
 
   it("rounds an average to one decimal place", () => {
@@ -150,7 +171,14 @@ describe("themeClusters", () => {
       row({ issueKey: "C", temperatureScore: 2, issue: { components: ["X"] } }),
     ];
     // (1+1+2)/3 = 1.333... -> 1.3
-    expect(themeClusters(rows)[0].avgDemand).toBe(1.3);
+    expect(themeClusters(rows).themes[0].avgDemand).toBe(1.3);
+  });
+
+  it("returns empty themes and zero totals for no open rows", () => {
+    const out = themeClusters([row({ status: "resolved" })]);
+    expect(out.themes).toEqual([]);
+    expect(out.openTotal).toBe(0);
+    expect(out.uncategorizedCount).toBe(0);
   });
 });
 
@@ -187,23 +215,23 @@ describe("customerConcentration", () => {
 // --- triageCoverage ---------------------------------------------------------
 
 describe("triageCoverage", () => {
-  it("treats assigned OR slotted as triaged; only open counts", () => {
+  it("counts only assignee as triaged; suggestedSprint is irrelevant", () => {
     const rows: DemandRow[] = [
+      // untriaged: no assignee (AI sprint suggestion does NOT triage it)
+      row({ issueKey: "A", suggestedSprint: 1, issue: { assignee: null } }),
       // untriaged: no assignee, no sprint
-      row({ issueKey: "A", suggestedSprint: null, issue: { assignee: null } }),
-      // triaged via assignee
-      row({ issueKey: "B", suggestedSprint: null, issue: { assignee: "ricky" } }),
-      // triaged via sprint slot
-      row({ issueKey: "C", suggestedSprint: 1, issue: { assignee: null } }),
+      row({ issueKey: "B", suggestedSprint: null, issue: { assignee: null } }),
+      // triaged via assignee (even with no sprint)
+      row({ issueKey: "C", suggestedSprint: null, issue: { assignee: "ricky" } }),
       // resolved -> excluded from total entirely
-      row({ issueKey: "D", status: "resolved", suggestedSprint: null, issue: { assignee: null } }),
+      row({ issueKey: "D", status: "resolved", issue: { assignee: null } }),
     ];
     const out = triageCoverage(rows);
     expect(out.total).toBe(3);
-    expect(out.untriaged).toBe(1);
-    expect(out.triaged).toBe(2);
-    expect(out.untriagedRows.map((r) => r.issueKey)).toEqual(["A"]);
-    expect(out.coveragePct).toBe(67); // 2/3 = 66.6.. -> 67
+    expect(out.untriaged).toBe(2); // A and B — both unassigned regardless of sprint
+    expect(out.triaged).toBe(1);
+    expect(out.untriagedRows.map((r) => r.issueKey)).toEqual(["A", "B"]);
+    expect(out.coveragePct).toBe(33); // 1/3 = 33.3.. -> 33
   });
 
   it("returns 0% coverage and 0 totals for empty / all-resolved input", () => {

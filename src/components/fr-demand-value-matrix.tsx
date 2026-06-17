@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { TempBadge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -33,7 +34,10 @@ export function FrDemandValueMatrix({
   rows: Row[];
   onSelect?: (key: string) => void;
 }) {
-  const { cells, total } = buildMatrix(rows);
+  const { cells, total, demandCut, valueCut } = useMemo(
+    () => buildMatrix(rows),
+    [rows],
+  );
 
   return (
     <Card>
@@ -41,6 +45,11 @@ export function FrDemandValueMatrix({
         <CardTitle>Prioritization matrix</CardTitle>
         <span className="text-[11px] text-fg-subtle">
           Demand × Value · {total} open FR{total === 1 ? "" : "s"}
+          {demandCut !== null && valueCut !== null && (
+            <>
+              {` · high = top 40% (demand ≥ ${demandCut}, value ≥ ${valueCut})`}
+            </>
+          )}
         </span>
       </CardHeader>
       <CardBody>

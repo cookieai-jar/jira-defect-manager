@@ -1,5 +1,4 @@
 import { daysSince } from "@/lib/utils";
-import { hasEpicParent } from "@/types/triage";
 import type { JiraIssue, TicketAnalysis } from "@/types/triage";
 
 /** A ticket analysis joined with its source JIRA issue. */
@@ -49,21 +48,26 @@ export function sprintPlan(rows: DeliveryRow[]): SprintBucket[] {
   });
 }
 
-export interface EpicOrphans {
+export interface UnstructuredFrs {
   rows: DeliveryRow[];
   count: number;
 }
 
 /**
- * Open rows that are not attached to an Epic parent — i.e. unplanned FRs that
- * still need to be slotted into an epic. Ranked by demand+value, descending.
+ * Open rows with no roadmap structure at all — neither a parent issue nor any
+ * component. These are truly floating asks a PM should file under an initiative.
+ *
+ * NOTE: an earlier version flagged any FR lacking an *Epic* parent, but on real
+ * data that was ~100% of the backlog (these FRs simply aren't parented to epics),
+ * making the signal useless. Requiring "no parent AND no component" isolates the
+ * genuinely unfiled minority. Ranked by demand+value, descending.
  */
-export function epicOrphans(rows: DeliveryRow[]): EpicOrphans {
-  const orphans = rows
+export function noRoadmapLink(rows: DeliveryRow[]): UnstructuredFrs {
+  const unstructured = rows
     .filter(isOpen)
-    .filter((r) => !hasEpicParent(r.issue))
+    .filter((r) => r.issue.parent == null && r.issue.components.length === 0)
     .sort((a, b) => priorityWeight(b) - priorityWeight(a));
-  return { rows: orphans, count: orphans.length };
+  return { rows: unstructured, count: unstructured.length };
 }
 
 export interface AgingRow {
@@ -75,10 +79,11 @@ export interface AgingRow {
 /**
  * In-flight (active|blocked) rows that have gone quiet for at least
  * `thresholdDays` (inclusive). This reframes "stalled": only in-flight work
- * going silent is a real signal — idle backlog is expected. Sorted by
- * staleness, descending.
+ * going silent is a real signal — idle backlog is expected. The default is 30
+ * days, not 14: FR work moves on product cadences, so a 14-day floor flagged
+ * ~92% of in-flight items (no signal). Sorted by staleness, descending.
  */
-export function inFlightAging(rows: DeliveryRow[], thresholdDays = 14): AgingRow[] {
+export function inFlightAging(rows: DeliveryRow[], thresholdDays = 30): AgingRow[] {
   return rows
     .filter(isOpen)
     .filter(isInFlight)

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -30,7 +31,7 @@ export function FrDecisionsNeeded({
   rows: Row[];
   onSelect?: (key: string) => void;
 }) {
-  const items = decisionsNeeded(rows);
+  const items = useMemo(() => decisionsNeeded(rows), [rows]);
 
   return (
     <Card>

@@ -43,58 +43,88 @@ function mean(nums: number[]): number {
 // 1. Theme clusters
 // ---------------------------------------------------------------------------
 
+export const UNCATEGORIZED = "Uncategorized";
+
+/** A theme buckets >40% of open FRs — too broad to inform a decision. */
+export const TOO_GENERIC_SHARE = 0.4;
+
 export interface ThemeCluster {
   theme: string;
   count: number;
   avgDemand: number; // mean temperatureScore, 1dp
   avgValue: number; // mean severityScore, 1dp
+  share: number; // count / openTotal, 0-1
+  tooGeneric: boolean; // share > TOO_GENERIC_SHARE — a catch-all bucket
   keys: string[];
 }
 
-/**
- * Pick a theme key for a row, in priority order:
- *   1. issue.components[0]
- *   2. issue.labels[0]
- *   3. parent epic summary  (only when parent.type === "Epic")
- *   4. "Uncategorized"
- */
-export function themeKey(row: DemandRow): string {
-  const comp = row.issue.components?.[0];
-  if (comp) return comp;
-  const label = row.issue.labels?.[0];
-  if (label) return label;
-  const parent = row.issue.parent;
-  if (parent && parent.type === "Epic" && parent.summary) return parent.summary;
-  return "Uncategorized";
+export interface ThemeClusters {
+  themes: ThemeCluster[];
+  openTotal: number;
+  /** How many open FRs carried no component/label tag at all. */
+  uncategorizedCount: number;
 }
 
 /**
- * Group open rows by theme key. Sorted by count desc, then avgDemand desc.
+ * Derive the set of theme tags a row carries: the union of ALL components and
+ * ALL labels, trimmed and de-duped within the row. A row with no components and
+ * no labels gets the single tag "Uncategorized". A row contributes to EVERY tag
+ * it carries, so a multi-tagged row appears under multiple themes.
  */
-export function themeClusters(rows: DemandRow[]): ThemeCluster[] {
+export function themeTags(row: DemandRow): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of [...(row.issue.components ?? []), ...(row.issue.labels ?? [])]) {
+    const tag = raw?.trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags.length > 0 ? tags : [UNCATEGORIZED];
+}
+
+/**
+ * Multi-tag theme clustering over open rows: each open row contributes to every
+ * theme tag in its union of components + labels (or "Uncategorized" if it has
+ * none). Because a row can carry several tags, theme counts sum to >= the open
+ * total — that is expected. Each theme reports its share of the open total and
+ * a `tooGeneric` flag when that share exceeds TOO_GENERIC_SHARE, so the UI can
+ * de-emphasize catch-all buckets. Sorted by count desc, then avgDemand desc.
+ */
+export function themeClusters(rows: DemandRow[]): ThemeClusters {
   const open = openRows(rows);
+  const openTotal = open.length;
   const groups = new Map<string, DemandRow[]>();
+  let uncategorizedCount = 0;
+
   // Preserve first-seen insertion order for stable downstream tie-breaks.
   for (const r of open) {
-    const key = themeKey(r);
-    const bucket = groups.get(key);
-    if (bucket) bucket.push(r);
-    else groups.set(key, [r]);
+    const tags = themeTags(r);
+    if (tags.length === 1 && tags[0] === UNCATEGORIZED) uncategorizedCount++;
+    for (const tag of tags) {
+      const bucket = groups.get(tag);
+      if (bucket) bucket.push(r);
+      else groups.set(tag, [r]);
+    }
   }
 
-  const clusters: ThemeCluster[] = [];
+  const themes: ThemeCluster[] = [];
   for (const [theme, members] of groups) {
-    clusters.push({
+    const count = members.length;
+    const share = openTotal === 0 ? 0 : count / openTotal;
+    themes.push({
       theme,
-      count: members.length,
+      count,
       avgDemand: round1(mean(members.map((m) => m.temperatureScore))),
       avgValue: round1(mean(members.map((m) => m.severityScore))),
+      share,
+      tooGeneric: share > TOO_GENERIC_SHARE,
       keys: members.map((m) => m.issueKey),
     });
   }
 
-  clusters.sort((a, b) => b.count - a.count || b.avgDemand - a.avgDemand);
-  return clusters;
+  themes.sort((a, b) => b.count - a.count || b.avgDemand - a.avgDemand);
+  return { themes, openTotal, uncategorizedCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,19 +188,17 @@ export interface TriageCoverage {
   untriaged: number;
   triaged: number;
   untriagedRows: DemandRow[];
-  coveragePct: number; // triaged/total*100 rounded; 0 when total is 0
+  coveragePct: number; // triaged (= assigned) / total * 100 rounded; 0 when total is 0
 }
 
 /**
- * An open FR is "untriaged" when it has no assignee AND is not slotted into a
- * sprint (suggestedSprint === null) — i.e. no owner and no plan. Assigned OR
- * slotted counts as triaged.
+ * Triage coverage tracks real HUMAN ownership: an open FR is "untriaged" when
+ * it has no assignee. An AI-assigned suggestedSprint is not a human triage act,
+ * so it does not count — coverage measures who has picked the work up.
  */
 export function triageCoverage(rows: DemandRow[]): TriageCoverage {
   const open = openRows(rows);
-  const untriagedRows = open.filter(
-    (r) => !r.issue.assignee && r.suggestedSprint === null,
-  );
+  const untriagedRows = open.filter((r) => !r.issue.assignee);
   const total = open.length;
   const untriaged = untriagedRows.length;
   const triaged = total - untriaged;

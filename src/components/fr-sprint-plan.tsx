@@ -7,7 +7,7 @@ import { TempBadge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
   sprintPlan,
-  epicOrphans,
+  noRoadmapLink,
   inFlightAging,
   type DeliveryRow,
 } from "@/lib/fr-delivery";
@@ -28,7 +28,7 @@ export function FrSprintPlan({
   onSelect?: (key: string) => void;
 }) {
   const buckets = useMemo(() => sprintPlan(rows as DeliveryRow[]), [rows]);
-  const orphans = useMemo(() => epicOrphans(rows as DeliveryRow[]), [rows]);
+  const orphans = useMemo(() => noRoadmapLink(rows as DeliveryRow[]), [rows]);
   const aging = useMemo(() => inFlightAging(rows as DeliveryRow[]), [rows]);
 
   const openCount = buckets.reduce((n, b) => n + b.count, 0);
@@ -102,9 +102,9 @@ export function FrSprintPlan({
               <Callout
                 icon={<GitBranch className="h-3.5 w-3.5" />}
                 tone="warning"
-                title="Not attached to an epic"
+                title="No roadmap link"
                 count={orphans.count}
-                hint="Unplanned FRs that need an epic"
+                hint="No parent and no component — file under an initiative"
               >
                 {orphans.rows.slice(0, CALLOUT_MAX).map((r) => (
                   <CalloutChip
@@ -126,7 +126,7 @@ export function FrSprintPlan({
                 tone="danger"
                 title="In-flight going quiet"
                 count={aging.length}
-                hint="Active/blocked FRs with no update in 14+ days"
+                hint="Active/blocked FRs with no update in 30+ days"
               >
                 {aging.slice(0, CALLOUT_MAX).map(({ row, daysQuiet }) => (
                   <CalloutChip

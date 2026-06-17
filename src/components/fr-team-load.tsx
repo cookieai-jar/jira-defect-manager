@@ -92,11 +92,13 @@ export function FrTeamLoad({
             </p>
           ) : (
             blocked.map((b) => (
-              <div
+              <button
                 key={b.key}
+                type="button"
                 onClick={onSelect ? () => onSelect(b.key) : undefined}
+                disabled={!onSelect}
                 className={cn(
-                  "rounded border border-border bg-bg-muted/40 px-2.5 py-2",
+                  "w-full text-left rounded border border-border bg-bg-muted/40 px-2.5 py-2",
                   onSelect && "cursor-pointer hover:bg-bg-muted/70",
                 )}
               >
@@ -114,7 +116,7 @@ export function FrTeamLoad({
                 <div className="mt-0.5 text-[11px] text-fg-muted line-clamp-2">
                   {b.reason}
                 </div>
-              </div>
+              </button>
             ))
           )}
         </CardBody>

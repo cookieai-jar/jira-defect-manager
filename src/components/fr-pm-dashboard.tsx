@@ -128,7 +128,7 @@ export function FrPmDashboard() {
             <Stat
               icon={<Clock className="h-4 w-4 text-warning" />}
               label="Aging in-flight"
-              hint="Active/blocked, quiet 14+ days"
+              hint="Active/blocked, quiet 30+ days"
               value={stats.aging}
               tone="warning"
             />

@@ -90,6 +90,10 @@ export function mapRecommendationToAction(
       return "needs-spec";
     case "continue":
       return "review";
+    default:
+      // recommendation comes from LLM-generated JSON and is not runtime-enforced;
+      // any out-of-union value degrades safely to a generic "review".
+      return "review";
   }
 }
 
