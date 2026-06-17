@@ -16,7 +16,14 @@ import { SyncButton } from "@/components/sync-button";
 import { P0Card } from "@/components/p0-card";
 import { TicketDrawer } from "@/components/ticket-drawer";
 import { FrPmTable } from "@/components/fr-pm-table";
-import { cn, daysSince } from "@/lib/utils";
+import { FrFlowTrend } from "@/components/fr-flow-trend";
+import { FrDemandValueMatrix } from "@/components/fr-demand-value-matrix";
+import { FrDecisionsNeeded } from "@/components/fr-decisions-needed";
+import { FrSprintPlan } from "@/components/fr-sprint-plan";
+import { FrTeamLoad } from "@/components/fr-team-load";
+import { FrDemandInsights } from "@/components/fr-demand-insights";
+import { inFlightAging } from "@/lib/fr-delivery";
+import { cn } from "@/lib/utils";
 import type { JiraIssue, TriageReport } from "@/types/triage";
 
 export function FrPmDashboard() {
@@ -57,14 +64,14 @@ export function FrPmDashboard() {
   const stats = useMemo(() => {
     const total = rows.length;
     const highDemand = rows.filter((r) => r.temperatureScore >= 7).length;
-    const stalled = rows.filter(
-      (r) => r.status !== "resolved" && daysSince(r.issue.updated) >= 30,
-    ).length;
+    // Reframed from "stalled backlog" (noise — idle backlog is normal for FRs)
+    // to aging *in-flight* work: active/blocked items that have gone quiet.
+    const aging = inFlightAging(rows).length;
     const unassigned = rows.filter(
       (r) => r.status !== "resolved" && !r.issue.assignee,
     ).length;
     const blocked = rows.filter((r) => r.status === "blocked").length;
-    return { total, highDemand, stalled, unassigned, blocked };
+    return { total, highDemand, aging, unassigned, blocked };
   }, [rows]);
 
   const statusPipeline = useMemo(() => {
@@ -120,9 +127,9 @@ export function FrPmDashboard() {
             />
             <Stat
               icon={<Clock className="h-4 w-4 text-warning" />}
-              label="Stalled"
-              hint="No update in 30+ days"
-              value={stats.stalled}
+              label="Aging in-flight"
+              hint="Active/blocked, quiet 14+ days"
+              value={stats.aging}
               tone="warning"
             />
             <Stat
@@ -138,6 +145,18 @@ export function FrPmDashboard() {
               hint="Awaiting input / dependency"
               value={stats.blocked}
             />
+          </div>
+
+          {/* Macro flow: created vs resolved, WIP, backlog verdict */}
+          <FrFlowTrend trend={report.trend} rows={rows} />
+
+          {/* Prioritization: the shared PM/EM build-order artifact */}
+          <FrDemandValueMatrix rows={rows} onSelect={setSelected} />
+
+          {/* Action layer + capacity, side by side */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+            <FrDecisionsNeeded rows={rows} onSelect={setSelected} />
+            <FrTeamLoad rows={rows} onSelect={setSelected} />
           </div>
 
           {/* Status pipeline */}
@@ -181,6 +200,12 @@ export function FrPmDashboard() {
               </CardBody>
             </Card>
           )}
+
+          {/* EM delivery: what's slotted for upcoming sprints + epic hygiene */}
+          <FrSprintPlan rows={rows} onSelect={setSelected} />
+
+          {/* PM demand analysis: themes, customer pull, triage coverage, dupes */}
+          <FrDemandInsights rows={rows} onSelect={setSelected} />
 
           {/* White-glove customers — same as existing dashboard */}
           <section className="space-y-3">
