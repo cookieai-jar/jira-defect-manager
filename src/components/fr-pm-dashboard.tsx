@@ -20,7 +20,7 @@ import { FrFlowTrend } from "@/components/fr-flow-trend";
 import { FrDemandValueMatrix } from "@/components/fr-demand-value-matrix";
 import { FrDecisionsNeeded } from "@/components/fr-decisions-needed";
 import { FrSprintPlan } from "@/components/fr-sprint-plan";
-import { FrTeamLoad } from "@/components/fr-team-load";
+import { FrTeamLoad, FrBlocked } from "@/components/fr-team-load";
 import { FrDemandInsights } from "@/components/fr-demand-insights";
 import { inFlightAging } from "@/lib/fr-delivery";
 import { cn } from "@/lib/utils";
@@ -153,10 +153,11 @@ export function FrPmDashboard() {
           {/* Prioritization: the shared PM/EM build-order artifact */}
           <FrDemandValueMatrix rows={rows} onSelect={setSelected} />
 
-          {/* Action layer + capacity, side by side */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+          {/* Action layer + capacity, three aligned peers */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
             <FrDecisionsNeeded rows={rows} onSelect={setSelected} />
             <FrTeamLoad rows={rows} onSelect={setSelected} />
+            <FrBlocked rows={rows} onSelect={setSelected} />
           </div>
 
           {/* Status pipeline */}
