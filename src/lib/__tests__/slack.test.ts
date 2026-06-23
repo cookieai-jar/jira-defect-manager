@@ -12,6 +12,8 @@ describe("parseAlert", () => {
       kind: "extraction",
       name: "[FIRING] Extraction stalled for tenant acme",
       state: "firing",
+      severity: "warning",
+      reason: null,
       firedAt: "2023-11-14T22:13:20.000Z",
       source: "slack",
       url: null,

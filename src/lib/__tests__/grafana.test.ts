@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePromInstant, parsePromMatrix, distinctLabelValues } from "@/lib/grafana";
+import { parsePromInstant, parsePromMatrix, distinctLabelValues, parseTenantAlerts } from "@/lib/grafana";
 
 describe("parsePromInstant", () => {
   it("parses a normal instant response", () => {
@@ -124,5 +124,47 @@ describe("distinctLabelValues", () => {
 
   it("returns [] when no series have the label", () => {
     expect(distinctLabelValues([{ metric: {} }], "tenant")).toEqual([]);
+  });
+});
+
+describe("parseTenantAlerts", () => {
+  const alerts = [
+    { labels: { alertname: "ParseFailures", tenant_id: "bcgprod", agent_type: "s3", severity: "warning" }, status: { state: "active" }, startsAt: "2026-06-01T00:00:00Z", generatorURL: "http://g/1" },
+    { labels: { alertname: "ExtractionJobsStuckPending_Tier24", namespace: "bcgprod-cp", agent_type: "sharepoint", severity: "critical" }, status: { state: "active" } },
+    { labels: { alertname: "AuditLogExtractionFailures", tenant_id: "bcgprod", error_reason: "UNKNOWN", severity: "warning" }, status: { state: "active" } },
+    { labels: { alertname: "SomeoneElse", tenant_id: "other", severity: "critical" }, status: { state: "active" } },
+  ];
+
+  it("matches by tenant_id OR <tenant>-cp namespace, excludes other tenants", () => {
+    const out = parseTenantAlerts(alerts, "bcgprod");
+    expect(out.map((a) => a.name).sort()).toEqual([
+      "AuditLogExtractionFailures",
+      "ExtractionJobsStuckPending_Tier24",
+      "ParseFailures",
+    ]);
+  });
+
+  it("maps severity, kind, reason, integration, state", () => {
+    const out = parseTenantAlerts(alerts, "bcgprod");
+    const parse = out.find((a) => a.name === "ParseFailures")!;
+    expect(parse).toMatchObject({ integration: "s3", kind: "parse", severity: "warning", state: "firing", url: "http://g/1" });
+    const stuck = out.find((a) => a.name.includes("Stuck"))!;
+    expect(stuck).toMatchObject({ integration: "sharepoint", kind: "extraction", severity: "critical" });
+    const audit = out.find((a) => a.name === "AuditLogExtractionFailures")!;
+    expect(audit.reason).toBe("UNKNOWN");
+  });
+
+  it("maps non-critical/warning severities (info) to ok and suppressed to resolved", () => {
+    const out = parseTenantAlerts(
+      [{ labels: { alertname: "Info", tenant_id: "bcgprod", severity: "info" }, status: { state: "suppressed" } }],
+      "bcgprod",
+    );
+    expect(out[0].severity).toBe("ok");
+    expect(out[0].state).toBe("resolved");
+  });
+
+  it("returns [] for non-array / empty", () => {
+    expect(parseTenantAlerts(null, "bcgprod")).toEqual([]);
+    expect(parseTenantAlerts([], "bcgprod")).toEqual([]);
   });
 });

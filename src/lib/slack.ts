@@ -117,6 +117,8 @@ export function parseAlert(msg: { text: string; ts: string }): TenantAlert | nul
     kind,
     name,
     state,
+    severity: "warning",
+    reason: null,
     firedAt: slackTsToIso(msg.ts),
     source: "slack",
     url: null,

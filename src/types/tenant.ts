@@ -95,15 +95,17 @@ export interface TenantErrorGroup {
   jiraKeys: string[];
 }
 
-/** An alert fired for the tenant (from Grafana alert series and/or Slack). */
+/** An alert fired for the tenant (from Grafana Alertmanager). */
 export interface TenantAlert {
   integration: string | null;
   kind: "extraction" | "parse" | "other";
   name: string;
   state: "firing" | "resolved";
-  firedAt: string;
+  severity: Severity;
+  /** Error reason label when present (e.g. "UNKNOWN", "EXTRACTION_PERMISSION_DENIED"). */
+  reason: string | null;
+  firedAt: string | null;
   source: "grafana" | "slack";
-  /** Permalink to the Slack message or Grafana alert, when available. */
   url: string | null;
 }
 
@@ -117,15 +119,34 @@ export interface TenantIncident {
   url: string | null;
 }
 
-/** Per-integration roll-up shown as a card. */
+/** Per-integration roll-up shown as a card. All metrics windowed (see report.windowHours). */
 export interface IntegrationHealth {
+  /** The agent_type, e.g. "okta", "sharepoint", "awsiam". */
   integration: string;
-  metrics: IntegrationMetrics;
-  breaches: ThresholdBreach[];
-  /** Worst breach severity, or "ok". */
-  severity: Severity;
-  errorGroups: TenantErrorGroup[];
+  extractions: number;
+  extractionErrors: number;
+  /** Windowed avg parse ms per task (null when no parse tasks in window). */
+  parseAvgMs: number | null;
+  parseTasks: number;
   alerts: TenantAlert[];
+  breaches: ThresholdBreach[];
+  /** Worst of alerts + breaches, or "ok". */
+  severity: Severity;
+}
+
+/** Tenant-level Neo4j write volume (write throughput, NOT absolute graph size). */
+export interface GraphWrite {
+  entityType: string; // "node" | "edge"
+  operation: string; // "created" | "modified" | "removed"
+  count: number; // over the window
+}
+
+/** A JIRA ticket joined to this tenant via the Customer field. */
+export interface TenantJiraTicket {
+  key: string;
+  summary: string;
+  status: string;
+  url: string;
 }
 
 /** A tenant and how it maps across sources. */
@@ -138,18 +159,33 @@ export interface Tenant {
 
 /** The full computed health report for one tenant (persisted as a blob). */
 export interface TenantHealthReport {
+  /** Grafana tenant_id slug, e.g. "bcgprod". */
   tenant: string;
+  /** Display name (JIRA Customer value), e.g. "BCG". Falls back to the slug. */
+  displayName: string;
   generatedAt: string;
+  /** Metric window the numbers cover. */
+  windowHours: number;
   integrations: IntegrationHealth[];
-  trends: MetricTrend[];
+  /** Tenant-level graph write volume over the window. */
+  graphWrites: GraphWrite[];
+  /** All active alerts for the tenant (including non-integration infra alerts). */
   alerts: TenantAlert[];
-  incidents: TenantIncident[];
-  /** JIRA tickets associated with this tenant (joined via Customer field). */
-  jiraKeys: string[];
-  /** Composite 0-100 health score; lower = worse. */
+  /** Known vs unknown error tally (errclass user|internal taxonomy). */
+  errorClassification: { known: number; unknown: number };
+  /** JIRA tickets joined via the Customer field. */
+  jiraTickets: TenantJiraTicket[];
+  /** Composite 0-100 health score; higher = healthier. */
   healthScore: number;
-  /** Ranked top issues across the tenant (for the overview + header). */
+  /** Ranked top issues (for the header + overview). */
   topIssues: string[];
-  /** Per-source availability so the UI can show partial-data banners. */
-  sources: { grafana: boolean; slack: boolean; jira: boolean };
+  /** Headline totals for the summary stats row. */
+  totals: {
+    integrations: number;
+    extractions: number;
+    extractionErrors: number;
+    activeAlerts: number;
+  };
+  /** Per-source availability for partial-data banners. */
+  sources: { grafanaMetrics: boolean; grafanaAlerts: boolean; jira: boolean; loki: boolean };
 }

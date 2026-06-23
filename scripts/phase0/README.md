@@ -108,6 +108,25 @@ can carry env suffixes (`-prod`) and there can be near-dupes (`crb` vs `customer
   datasources: `grafanacloud-caiprod-logs`, per-region veza* logs). `grafana.ts` needs a small
   LogQL query method in Phase 1.
 
+## Phase 1 discovery — tenant `bcgprod` (live, `spike-bcgprod.mjs`)
+- Confirmed: tenant_id=`bcgprod`, 249 parser + 61 extraction series. JIRA join: Customer=`"BCG"`.
+- **Integration inventory** = distinct `agent_type` on `veza_platform_extraction_total{tenant_id}`
+  (~61 real connectors). Parser's 155 agent_types include CSC pairs (`a-b`) — don't use for inventory.
+- **Per-integration queries (windowed, 24h):**
+  - extractions: `sum by (agent_type)(increase(veza_platform_extraction_total{tenant_id}[24h]))`
+  - extraction errors: same on `..._extraction_errors_total`
+  - parse time (avg ms/task): `increase(parser_task_duration_ms_total[24h]) / increase(parser_task_total[24h])`
+    by agent_type (NOT the all-time ratio — counters skew it; AD/subgraph showed 37M ms all-time).
+  - parse throughput: `increase(parser_task_total[24h])` by agent_type.
+- **Graph writes (tenant-level, not per-integration):** `increase(parser_neo4j_writes_total[24h])`
+  by `entity_type`/`operation` (write volume, NOT absolute graph size — absolute counts aren't in Prometheus).
+- **Alerts are the decisive health signal.** bcgprod extraction error *counters* = 0, yet 5 active alerts:
+  `PipelineThroughput_ExtractionJobsStuckPending_Tier24` (sharepoint, github_organization) = the 24h SLA
+  breach (Grafana computes it — we don't need extraction duration), `ParseFailures` (s3),
+  `AuditLogExtractionFailures` (UNKNOWN). Filter Alertmanager by `tenant_id` or `namespace=<tenant>-cp`.
+- **Loki error-detail:** `{namespace="bcgprod-cp"}` returned 0 — label/datasource needs a follow-up probe;
+  low priority (errors=0; signal is in alerts). Keep behind graceful-empty.
+
 ## What's already built (credential-independent, all tested)
 - `src/lib/jira.ts` — Customer field capture (`extractCustomers`, `CUSTOMER_FIELD`).
 - `src/types/tenant.ts` — domain model (Tenant, IntegrationMetrics, ThresholdRule/Breach,

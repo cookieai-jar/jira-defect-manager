@@ -1,4 +1,4 @@
-import type { MetricTrendPoint } from "@/types/tenant";
+import type { MetricTrendPoint, Severity, TenantAlert } from "@/types/tenant";
 
 interface GrafanaEnv {
   url: string;
@@ -144,6 +144,57 @@ export function parsePromMatrix(json: unknown): PromMatrixResult {
     out.push({
       metric: row.metric && typeof row.metric === "object" ? row.metric : {},
       points,
+    });
+  }
+  return out;
+}
+
+/**
+ * Fetch all currently-active Grafana-managed alerts (Alertmanager v2). Thin;
+ * filtering/shaping lives in parseTenantAlerts.
+ */
+export async function fetchActiveAlerts(): Promise<unknown> {
+  const e = env();
+  return grafanaFetch<unknown>(`${e.url}/api/alertmanager/grafana/api/v2/alerts`, e);
+}
+
+/** Map a Grafana `severity` label to our Severity. Non-critical/warning (info, …) => "ok". */
+function mapSeverity(raw: string | undefined): Severity {
+  if (raw === "critical") return "critical";
+  if (raw === "warning") return "warning";
+  return "ok";
+}
+
+function alertKind(name: string): TenantAlert["kind"] {
+  if (/parse/i.test(name)) return "parse";
+  if (/extract/i.test(name)) return "extraction";
+  return "other";
+}
+
+/**
+ * PURE. Filter the Alertmanager v2 alert array to one tenant and shape into
+ * TenantAlert[]. A tenant matches when `labels.tenant_id === tenant` OR
+ * `labels.namespace === "<tenant>-cp"` (the parser/extractor k8s namespace).
+ */
+export function parseTenantAlerts(json: unknown, tenant: string): TenantAlert[] {
+  if (!Array.isArray(json)) return [];
+  const ns = `${tenant}-cp`;
+  const out: TenantAlert[] = [];
+  for (const a of json) {
+    const labels = (a as { labels?: Record<string, string> })?.labels ?? {};
+    if (labels.tenant_id !== tenant && labels.namespace !== ns) continue;
+    const status = (a as { status?: { state?: string } })?.status?.state;
+    const name = labels.alertname ?? "(unnamed)";
+    out.push({
+      integration: labels.agent_type || null,
+      kind: alertKind(name),
+      name,
+      state: status === "suppressed" ? "resolved" : "firing",
+      severity: mapSeverity(labels.severity),
+      reason: labels.error_reason || labels.stage || null,
+      firedAt: (a as { startsAt?: string })?.startsAt ?? null,
+      source: "grafana",
+      url: (a as { generatorURL?: string })?.generatorURL || null,
     });
   }
   return out;
