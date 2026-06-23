@@ -64,14 +64,29 @@ Need in `.env.local`:
 grep for `extract|parse|node|edge|entit|error`, and print each candidate's label keys.
 **Open question it answers:** the real metric names + the tenant/integration label keys.
 
-### 3. Slack alerts — PENDING KEYS ⛔
-Need in `.env.local`:
-- `SLACK_BOT_TOKEN` — `xoxb-…` with `channels:history`, `groups:history`, `channels:read`
-- `SLACK_ALERT_CHANNEL_IDS` — comma-separated channel ids where extraction/parse alerts fire
+### 3. Alerts — RESOLVED ✅ via Grafana (Slack DROPPED, no token needed)
+The extraction/parse alerts originate in Grafana Alerting, so they're reachable with
+the existing Grafana token — Slack adds nothing. Confirmed live (`spike-grafana-alerts.mjs`):
+- **Active alerts:** `GET /api/alertmanager/grafana/api/v2/alerts` → 241 instances. Real
+  extraction/parse alert names: `ParseFailures`, `ExtractionInternalErrors`,
+  `AuditLogExtractionFailures`, `PipelineThroughput_ExtractionJobsStuckPending_Tier24/Tier72`,
+  `PipelineThroughput_{Legacy,}ParseJobsStuck*`, `PostgreSQLUnknownClassExtractionFailure`,
+  `PostgreSQLInternalClassExtractionFailure`.
+- **Labels carry the join keys:** `tenant_id`, `namespace` (`<tenant>-cp`), `agent_type`,
+  plus `error_reason`, `stage`, `pipeline`, `platform_error`, `severity`, `team`.
+- **Known vs unknown is in the alert names** (`...UnknownClass...` vs `...InternalClass...`),
+  reinforcing the errclass `user` vs `internal` taxonomy.
+- **Rules:** `GET /api/prometheus/grafana/api/v1/rules` → 617 rules (133 extraction/parse/neo4j).
+- **History (for trends):** alert-state-history Loki datasource (uid
+  `grafanacloud-alert-state-history`), selector `{from="state-history"}`, lines are JSON with
+  `current`/`previous` state + full `labels` (incl. `tenant_id`/`namespace`). Gives firing/
+  resolved transitions per tenant over time.
 
-`spike-slack.mjs` will `auth.test`, then dump recent messages per channel + the
-`parseAlert()` result, so we can confirm the real alert format (and whether it's
-structured Grafana output or free-form).
+Tenant join for alerts: prefer the `tenant_id` label; else derive from `namespace` by
+stripping the `-cp` suffix (e.g. `intuit-e2e-cp` → `intuit-e2e`).
+
+Slack `spike-slack.mjs` + `slack.ts` remain in the tree but are unused; revisit only if we
+later want human incident chatter that exists nowhere else.
 
 ### 4. Tenant-name normalization — CONFIRMED NEEDED ⚠️
 Grafana `tenant_id` is a **slug** (`smurfitwestrock`, `customersbank-prod`, `crb`) while
