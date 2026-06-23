@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, HealthBadge } from "@/components/ui/badge";
 import { StatusChip } from "@/components/jira-chips";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
+  ArrowLeft,
   Boxes,
   ExternalLink,
   HeartPulse,
@@ -25,8 +27,6 @@ import type {
   TenantHealthReport,
   TenantJiraTicket,
 } from "@/types/tenant";
-
-const TENANT = "bcgprod";
 
 interface ReportResponse {
   report: TenantHealthReport | null;
@@ -60,7 +60,7 @@ const SOURCE_LABELS: Record<keyof TenantHealthReport["sources"], string> = {
   loki: "Loki",
 };
 
-export function TenantHealthDashboard() {
+export function TenantHealthDashboard({ tenant }: { tenant: string }) {
   const [report, setReport] = useState<TenantHealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,7 +70,7 @@ export function TenantHealthDashboard() {
     setError(null);
     try {
       const data = (await fetch(
-        `/api/tenant/report?tenant=${encodeURIComponent(TENANT)}`,
+        `/api/tenant/report?tenant=${encodeURIComponent(tenant)}`,
       ).then((r) => r.json())) as ReportResponse;
       setReport(data.report);
       setError(data.error ?? null);
@@ -80,7 +80,7 @@ export function TenantHealthDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tenant]);
 
   useEffect(() => {
     refresh();
@@ -117,10 +117,17 @@ export function TenantHealthDashboard() {
           <h1 className="text-lg font-semibold flex items-center gap-2">
             <HeartPulse className="h-4 w-4 text-accent" />
             Tenant Health
+            <Link
+              href="/tenants"
+              className="inline-flex items-center gap-1 text-xs font-normal text-fg-muted hover:text-accent transition-colors"
+            >
+              <ArrowLeft className="h-3 w-3" />
+              All tenants
+            </Link>
           </h1>
           <p className="text-[11px] text-fg-subtle">
-            {report ? report.displayName : "BCG"}{" "}
-            <span className="font-mono text-fg-muted">· {report?.tenant ?? TENANT}</span>
+            {report ? report.displayName : tenant}{" "}
+            <span className="font-mono text-fg-muted">· {report?.tenant ?? tenant}</span>
             {partialSources.length > 0 && (
               <span className="ml-2 inline-flex items-center gap-1 text-warning">
                 <TriangleAlert className="h-3 w-3" />

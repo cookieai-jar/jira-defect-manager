@@ -168,3 +168,33 @@ describe("parseTenantAlerts", () => {
     expect(parseTenantAlerts([], "bcgprod")).toEqual([]);
   });
 });
+
+import { alertTenantId, parseAlertsByTenant } from "@/lib/grafana";
+
+describe("alertTenantId", () => {
+  it("prefers tenant_id, else derives from <tenant>-cp namespace, else null", () => {
+    expect(alertTenantId({ tenant_id: "bcgprod" })).toBe("bcgprod");
+    expect(alertTenantId({ namespace: "bcgprod-cp" })).toBe("bcgprod");
+    expect(alertTenantId({ namespace: "kube-system" })).toBeNull();
+    expect(alertTenantId({})).toBeNull();
+  });
+});
+
+describe("parseAlertsByTenant", () => {
+  it("groups tenant-attributable alerts, drops infra alerts (no tenant)", () => {
+    const json = [
+      { labels: { alertname: "A", tenant_id: "bcgprod", severity: "warning" }, status: { state: "active" } },
+      { labels: { alertname: "B", namespace: "wajax-cp", severity: "critical" }, status: { state: "active" } },
+      { labels: { alertname: "C", tenant_id: "bcgprod", severity: "critical" }, status: { state: "active" } },
+      { labels: { alertname: "Infra", cluster: "x", severity: "critical" }, status: { state: "active" } },
+    ];
+    const m = parseAlertsByTenant(json);
+    expect([...m.keys()].sort()).toEqual(["bcgprod", "wajax"]);
+    expect(m.get("bcgprod")!.length).toBe(2);
+    expect(m.get("wajax")![0].name).toBe("B");
+  });
+
+  it("returns empty map for non-array", () => {
+    expect(parseAlertsByTenant(null).size).toBe(0);
+  });
+});

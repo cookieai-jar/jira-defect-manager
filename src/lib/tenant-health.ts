@@ -1,7 +1,9 @@
-import { queryInstant, fetchActiveAlerts, parseTenantAlerts } from "@/lib/grafana";
+import { queryInstant, fetchActiveAlerts, parseTenantAlerts, parseAlertsByTenant } from "@/lib/grafana";
 import { searchIssues } from "@/lib/jira";
 import { DEFAULT_THRESHOLDS, evaluateMetrics } from "@/lib/tenant-thresholds";
 import type {
+  FleetReport,
+  FleetTenantSummary,
   GraphWrite,
   IntegrationHealth,
   IntegrationMetrics,
@@ -72,22 +74,107 @@ export function classifyErrors(alerts: TenantAlert[]): { known: number; unknown:
 }
 
 /**
- * PURE. Composite 0-100 health score. Heuristic: start at 100 and deduct for
- * firing alerts (critical heavier than warning) and integrations with extraction
- * errors. Clamped to [0, 100]. Higher = healthier.
+ * PURE. Composite 0-100 health primitive. Start at 100, deduct for firing alerts
+ * (critical heavier than warning) and integrations with extraction errors.
+ * Clamped to [0, 100]. Higher = healthier. Shared by the tenant detail and fleet.
  */
+export function scoreFromSignals(
+  criticalAlerts: number,
+  warningAlerts: number,
+  erroredIntegrations: number,
+): number {
+  const score = 100 - 15 * criticalAlerts - 6 * warningAlerts - 8 * erroredIntegrations;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 export function computeHealthScore(
   integrations: IntegrationHealth[],
   alerts: TenantAlert[],
 ): number {
-  let score = 100;
-  for (const a of alerts) {
-    if (a.state !== "firing") continue;
-    if (a.severity === "critical") score -= 15;
-    else if (a.severity === "warning") score -= 6;
+  const firing = alerts.filter((a) => a.state === "firing");
+  return scoreFromSignals(
+    firing.filter((a) => a.severity === "critical").length,
+    firing.filter((a) => a.severity === "warning").length,
+    integrations.filter((i) => i.extractionErrors > 0).length,
+  );
+}
+
+/** A tenant's overall worst firing-alert severity (ok when none firing). */
+function worstFiringSeverity(alerts: TenantAlert[]): Severity {
+  return worstOf(alerts.filter((a) => a.state === "firing").map((a) => a.severity));
+}
+
+/** One firing alert formatted as a short issue line. */
+function alertIssueLine(a: TenantAlert): string {
+  const who = a.integration ? `${a.integration}: ` : "";
+  const why = a.reason && a.reason !== "-" ? ` (${a.reason})` : "";
+  return `${who}${a.name}${why}`;
+}
+
+interface FleetInputs {
+  /** Per (tenant, agent_type) extraction volume over the window. */
+  extractionRows: Array<{ tenant: string; agent: string; value: number }>;
+  /** Per-tenant extraction error totals. */
+  errorsByTenant: Map<string, number>;
+  /** Per-tenant alerts. */
+  alertsByTenant: Map<string, TenantAlert[]>;
+}
+
+/**
+ * PURE. Build the fleet summary rows from aggregate (by-tenant) inputs. Universe
+ * is the union of tenants seen in metrics + alerts. Sorted worst-health first,
+ * then most active alerts, then name.
+ */
+export function buildFleetSummaries(inputs: FleetInputs): FleetTenantSummary[] {
+  const extractionsByTenant = new Map<string, number>();
+  const integrationsByTenant = new Map<string, Set<string>>();
+  for (const r of inputs.extractionRows) {
+    extractionsByTenant.set(r.tenant, (extractionsByTenant.get(r.tenant) ?? 0) + r.value);
+    const set = integrationsByTenant.get(r.tenant) ?? new Set<string>();
+    set.add(r.agent);
+    integrationsByTenant.set(r.tenant, set);
   }
-  score -= 8 * integrations.filter((i) => i.extractionErrors > 0).length;
-  return Math.max(0, Math.min(100, Math.round(score)));
+
+  const tenants = new Set<string>([
+    ...extractionsByTenant.keys(),
+    ...inputs.errorsByTenant.keys(),
+    ...inputs.alertsByTenant.keys(),
+  ]);
+
+  const rankSev: Record<Severity, number> = { critical: 0, warning: 1, ok: 2 };
+  const rows: FleetTenantSummary[] = [...tenants].map((tenant) => {
+    const alerts = inputs.alertsByTenant.get(tenant) ?? [];
+    const firing = alerts.filter((a) => a.state === "firing");
+    const criticalAlerts = firing.filter((a) => a.severity === "critical").length;
+    const warningAlerts = firing.filter((a) => a.severity === "warning").length;
+    const extractionErrors = Math.round(inputs.errorsByTenant.get(tenant) ?? 0);
+    const worstAlert = [...firing].sort((a, b) => rankSev[a.severity] - rankSev[b.severity])[0];
+    const topIssue = worstAlert
+      ? alertIssueLine(worstAlert)
+      : extractionErrors > 0
+        ? `${extractionErrors} extraction error${extractionErrors === 1 ? "" : "s"}`
+        : null;
+    return {
+      tenant,
+      displayName: normalizeTenantDisplayName(tenant),
+      extractions: Math.round(extractionsByTenant.get(tenant) ?? 0),
+      extractionErrors,
+      integrations: integrationsByTenant.get(tenant)?.size ?? 0,
+      activeAlerts: firing.length,
+      criticalAlerts,
+      warningAlerts,
+      healthScore: scoreFromSignals(criticalAlerts, warningAlerts, extractionErrors > 0 ? 1 : 0),
+      severity: worstFiringSeverity(alerts),
+      topIssue,
+    };
+  });
+
+  return rows.sort(
+    (a, b) =>
+      a.healthScore - b.healthScore ||
+      b.activeAlerts - a.activeAlerts ||
+      a.displayName.localeCompare(b.displayName),
+  );
 }
 
 /** PURE. Ranked human-readable top issues (critical first), capped at `limit`. */
@@ -279,6 +366,54 @@ export async function buildTenantReport(
       extractions: Math.round(totalExtractions),
       extractionErrors: Math.round(totalErrors),
       activeAlerts: alerts.filter((a) => a.state === "firing").length,
+    },
+    sources,
+  };
+}
+
+/**
+ * Assemble the fleet overview across ALL tenants in a handful of aggregate
+ * queries (NOT one report per tenant): 2 by-(tenant) PromQL queries + 1 alerts
+ * fetch. JIRA is intentionally skipped here (per-tenant; done on drill-in).
+ */
+export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> {
+  const windowHours = opts.windowHours ?? 24;
+  const w = `${windowHours}h`;
+  const sources = { grafanaMetrics: false, grafanaAlerts: false };
+
+  let extractionRows: Array<{ tenant: string; agent: string; value: number }> = [];
+  let errorsByTenant = new Map<string, number>();
+  try {
+    const [ext, err] = await Promise.all([
+      queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_total[${w}]))`),
+      queryInstant(`sum by (tenant_id) (increase(veza_platform_extraction_errors_total[${w}]))`),
+    ]);
+    extractionRows = ext
+      .filter((r) => r.metric.tenant_id)
+      .map((r) => ({ tenant: r.metric.tenant_id, agent: r.metric.agent_type ?? "?", value: r.value }));
+    for (const r of err) if (r.metric.tenant_id) errorsByTenant.set(r.metric.tenant_id, r.value);
+    sources.grafanaMetrics = true;
+  } catch (e) {
+    console.warn("[tenant-health] fleet metrics query failed:", e instanceof Error ? e.message : e);
+  }
+
+  let alertsByTenant = new Map<string, TenantAlert[]>();
+  try {
+    alertsByTenant = parseAlertsByTenant(await fetchActiveAlerts());
+    sources.grafanaAlerts = true;
+  } catch (e) {
+    console.warn("[tenant-health] fleet alerts query failed:", e instanceof Error ? e.message : e);
+  }
+
+  const tenants = buildFleetSummaries({ extractionRows, errorsByTenant, alertsByTenant });
+  return {
+    generatedAt: new Date().toISOString(),
+    windowHours,
+    tenants,
+    totals: {
+      tenants: tenants.length,
+      unhealthy: tenants.filter((t) => t.healthScore < 80).length,
+      activeAlerts: tenants.reduce((n, t) => n + t.activeAlerts, 0),
     },
     sources,
   };

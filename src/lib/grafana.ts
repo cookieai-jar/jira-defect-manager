@@ -172,30 +172,55 @@ function alertKind(name: string): TenantAlert["kind"] {
 }
 
 /**
+ * PURE. The tenant an alert belongs to: the `tenant_id` label, else derived from
+ * the `<tenant>-cp` k8s namespace, else null (infra alert with no tenant).
+ */
+export function alertTenantId(labels: Record<string, string>): string | null {
+  if (labels.tenant_id) return labels.tenant_id;
+  if (labels.namespace?.endsWith("-cp")) return labels.namespace.slice(0, -3);
+  return null;
+}
+
+/** Shape one Alertmanager v2 alert into a TenantAlert (no filtering). */
+function shapeAlert(a: unknown): TenantAlert {
+  const labels = (a as { labels?: Record<string, string> })?.labels ?? {};
+  const status = (a as { status?: { state?: string } })?.status?.state;
+  const name = labels.alertname ?? "(unnamed)";
+  return {
+    integration: labels.agent_type || null,
+    kind: alertKind(name),
+    name,
+    state: status === "suppressed" ? "resolved" : "firing",
+    severity: mapSeverity(labels.severity),
+    reason: labels.error_reason || labels.stage || null,
+    firedAt: (a as { startsAt?: string })?.startsAt ?? null,
+    source: "grafana",
+    url: (a as { generatorURL?: string })?.generatorURL || null,
+  };
+}
+
+/**
  * PURE. Filter the Alertmanager v2 alert array to one tenant and shape into
- * TenantAlert[]. A tenant matches when `labels.tenant_id === tenant` OR
- * `labels.namespace === "<tenant>-cp"` (the parser/extractor k8s namespace).
+ * TenantAlert[]. A tenant matches when `tenant_id === tenant` OR the alert's
+ * `<tenant>-cp` namespace maps to it.
  */
 export function parseTenantAlerts(json: unknown, tenant: string): TenantAlert[] {
   if (!Array.isArray(json)) return [];
-  const ns = `${tenant}-cp`;
-  const out: TenantAlert[] = [];
+  return json
+    .filter((a) => alertTenantId((a as { labels?: Record<string, string> })?.labels ?? {}) === tenant)
+    .map(shapeAlert);
+}
+
+/** PURE. Group every tenant-attributable alert by tenant id. Infra alerts (no tenant) are dropped. */
+export function parseAlertsByTenant(json: unknown): Map<string, TenantAlert[]> {
+  const out = new Map<string, TenantAlert[]>();
+  if (!Array.isArray(json)) return out;
   for (const a of json) {
-    const labels = (a as { labels?: Record<string, string> })?.labels ?? {};
-    if (labels.tenant_id !== tenant && labels.namespace !== ns) continue;
-    const status = (a as { status?: { state?: string } })?.status?.state;
-    const name = labels.alertname ?? "(unnamed)";
-    out.push({
-      integration: labels.agent_type || null,
-      kind: alertKind(name),
-      name,
-      state: status === "suppressed" ? "resolved" : "firing",
-      severity: mapSeverity(labels.severity),
-      reason: labels.error_reason || labels.stage || null,
-      firedAt: (a as { startsAt?: string })?.startsAt ?? null,
-      source: "grafana",
-      url: (a as { generatorURL?: string })?.generatorURL || null,
-    });
+    const t = alertTenantId((a as { labels?: Record<string, string> })?.labels ?? {});
+    if (!t) continue;
+    const list = out.get(t) ?? [];
+    list.push(shapeAlert(a));
+    out.set(t, list);
   }
   return out;
 }

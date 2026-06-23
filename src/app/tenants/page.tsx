@@ -1,5 +1,5 @@
-import { TenantHealthDashboard } from "@/components/tenant-health-dashboard";
+import { TenantFleetDashboard } from "@/components/tenant-fleet-dashboard";
 
 export default function TenantHealthPage() {
-  return <TenantHealthDashboard />;
+  return <TenantFleetDashboard />;
 }

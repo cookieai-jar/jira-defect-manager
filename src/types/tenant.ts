@@ -157,6 +157,34 @@ export interface Tenant {
   jiraCustomerValues: string[];
 }
 
+/** One row in the fleet overview — a lightweight health summary per tenant. */
+export interface FleetTenantSummary {
+  tenant: string;
+  displayName: string;
+  /** Extractions over the window. */
+  extractions: number;
+  extractionErrors: number;
+  /** Distinct integrations (agent_types) with activity in the window. */
+  integrations: number;
+  activeAlerts: number;
+  criticalAlerts: number;
+  warningAlerts: number;
+  healthScore: number;
+  severity: Severity;
+  /** Single worst issue line, or null when healthy. */
+  topIssue: string | null;
+}
+
+/** The fleet overview across all tenants. */
+export interface FleetReport {
+  generatedAt: string;
+  windowHours: number;
+  /** Sorted worst-health first. */
+  tenants: FleetTenantSummary[];
+  totals: { tenants: number; unhealthy: number; activeAlerts: number };
+  sources: { grafanaMetrics: boolean; grafanaAlerts: boolean };
+}
+
 /** The full computed health report for one tenant (persisted as a blob). */
 export interface TenantHealthReport {
   /** Grafana tenant_id slug, e.g. "bcgprod". */

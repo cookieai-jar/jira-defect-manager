@@ -141,3 +141,67 @@ describe("buildIntegrationHealth", () => {
     expect(rows[0].parseAvgMs).toBeNull();
   });
 });
+
+import { buildFleetSummaries, scoreFromSignals } from "@/lib/tenant-health";
+
+describe("scoreFromSignals", () => {
+  it("deducts 15/critical, 6/warning, 8/errored-integration, clamped", () => {
+    expect(scoreFromSignals(0, 0, 0)).toBe(100);
+    expect(scoreFromSignals(1, 1, 1)).toBe(71);
+    expect(scoreFromSignals(10, 0, 0)).toBe(0); // clamp
+  });
+});
+
+describe("buildFleetSummaries", () => {
+  const inputs = {
+    extractionRows: [
+      { tenant: "bcgprod", agent: "okta", value: 100.7 },
+      { tenant: "bcgprod", agent: "s3", value: 50 },
+      { tenant: "healthyco", agent: "aws", value: 10 },
+    ],
+    errorsByTenant: new Map([["bcgprod", 0]]),
+    alertsByTenant: new Map<string, TenantAlert[]>([
+      [
+        "bcgprod",
+        [
+          alert({ severity: "warning", name: "ParseFailures", integration: "s3", state: "firing" }),
+          alert({ severity: "ok", name: "Info", state: "firing" }),
+          alert({ severity: "critical", name: "Resolved", state: "resolved" }), // ignored (resolved)
+        ],
+      ],
+      ["alertonly", [alert({ severity: "critical", name: "Stuck", integration: "sharepoint" })]],
+    ]),
+  };
+
+  it("aggregates extractions + distinct integrations per tenant (rounded)", () => {
+    const rows = buildFleetSummaries(inputs);
+    const bcg = rows.find((r) => r.tenant === "bcgprod")!;
+    expect(bcg.extractions).toBe(151); // 100.7 + 50 rounded
+    expect(bcg.integrations).toBe(2); // okta, s3
+    expect(bcg.displayName).toBe("BCG");
+  });
+
+  it("counts only firing alerts by severity and picks worst for top issue", () => {
+    const rows = buildFleetSummaries(inputs);
+    const bcg = rows.find((r) => r.tenant === "bcgprod")!;
+    expect(bcg.warningAlerts).toBe(1);
+    expect(bcg.criticalAlerts).toBe(0);
+    expect(bcg.activeAlerts).toBe(2); // warning + ok firing; resolved excluded
+    expect(bcg.topIssue).toBe("s3: ParseFailures");
+  });
+
+  it("includes alert-only tenants (no metrics) and sorts worst-health first", () => {
+    const rows = buildFleetSummaries(inputs);
+    expect(rows.map((r) => r.tenant)).toContain("alertonly");
+    // alertonly has a critical alert -> lowest score -> first
+    expect(rows[0].tenant).toBe("alertonly");
+    expect(rows[0].severity).toBe("critical");
+  });
+
+  it("healthyco with no alerts/errors scores 100", () => {
+    const rows = buildFleetSummaries(inputs);
+    const h = rows.find((r) => r.tenant === "healthyco")!;
+    expect(h.healthScore).toBe(100);
+    expect(h.topIssue).toBeNull();
+  });
+});
