@@ -41,15 +41,29 @@ async function jiraFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** JIRA custom field id for the "Customer" multi-select (verified via spike). */
+export const CUSTOMER_FIELD = "customfield_10044";
+
+/** A multi-select option as JIRA serializes it: { self, value, id }. */
+interface JiraOption {
+  value?: string;
+  name?: string;
+}
+
 interface RawJiraIssue {
   key: string;
   fields: {
+    [CUSTOMER_FIELD]?: JiraOption[] | null;
     summary: string;
     status: { name: string; statusCategory: { key: string } };
     priority?: { name: string } | null;
     issuetype: { name: string };
     reporter?: { displayName: string } | null;
     assignee?: { displayName: string } | null;
+    parent?: {
+      key: string;
+      fields?: { summary?: string; issuetype?: { name?: string } };
+    } | null;
     created: string;
     updated: string;
     resolutiondate: string | null;
@@ -115,7 +129,27 @@ function normalizeIssue(raw: RawJiraIssue, baseUrl: string): JiraIssue {
     description: adfToPlainText(raw.fields.description).trim() || null,
     url: `${baseUrl}/browse/${raw.key}`,
     comments,
+    parent: raw.fields.parent
+      ? {
+          key: raw.fields.parent.key,
+          summary: raw.fields.parent.fields?.summary ?? "",
+          type: raw.fields.parent.fields?.issuetype?.name ?? "",
+        }
+      : null,
+    customers: extractCustomers(raw.fields[CUSTOMER_FIELD]),
   };
+}
+
+/**
+ * Pull the display values out of the "Customer" multi-select field. Each option
+ * serializes as { value, id }; we keep `value` (the tenant name). Tolerates
+ * null/undefined/empty and options that use `name` instead of `value`.
+ */
+export function extractCustomers(raw: JiraOption[] | null | undefined): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((o) => (o?.value ?? o?.name ?? "").trim())
+    .filter((s) => s.length > 0);
 }
 
 const FIELDS = [
@@ -125,6 +159,7 @@ const FIELDS = [
   "issuetype",
   "reporter",
   "assignee",
+  "parent",
   "created",
   "updated",
   "resolutiondate",
@@ -132,6 +167,7 @@ const FIELDS = [
   "components",
   "description",
   "comment",
+  CUSTOMER_FIELD,
 ].join(",");
 
 export async function searchIssues(jql: string, maxResults = 200): Promise<JiraIssue[]> {
@@ -157,6 +193,41 @@ export async function searchIssues(jql: string, maxResults = 200): Promise<JiraI
     out.push(...res.issues.map((raw) => normalizeIssue(raw, e.baseUrl)));
     if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
     nextPageToken = res.nextPageToken;
+  }
+  return out;
+}
+
+/**
+ * Page through ALL issues matching the JQL, batching 100 at a time until JIRA
+ * reports the last page. `hardCap` is a safety bound to avoid an unbounded
+ * fetch (and logs when hit). Use when the full population is needed rather than
+ * a capped sample.
+ */
+export async function searchAllIssues(jql: string, hardCap = 20000): Promise<JiraIssue[]> {
+  const e = env();
+  const out: JiraIssue[] = [];
+  let nextPageToken: string | undefined;
+  while (out.length < hardCap) {
+    const body: Record<string, unknown> = {
+      jql,
+      fields: FIELDS.split(","),
+      maxResults: 100,
+    };
+    if (nextPageToken) body.nextPageToken = nextPageToken;
+    const res = await jiraFetch<{
+      issues: RawJiraIssue[];
+      nextPageToken?: string;
+      isLast?: boolean;
+    }>("/rest/api/3/search/jql", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    out.push(...res.issues.map((raw) => normalizeIssue(raw, e.baseUrl)));
+    if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
+    nextPageToken = res.nextPageToken;
+  }
+  if (out.length >= hardCap) {
+    console.warn(`[searchAllIssues] hit hard cap of ${hardCap} issues; results truncated`);
   }
   return out;
 }

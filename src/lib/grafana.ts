@@ -1,0 +1,167 @@
+import type { MetricTrendPoint } from "@/types/tenant";
+
+interface GrafanaEnv {
+  url: string;
+  token: string;
+  /** Prometheus datasource UID, when configured. */
+  promUid: string | undefined;
+}
+
+function env(): GrafanaEnv {
+  const url = process.env.GRAFANA_URL?.replace(/\/$/, "");
+  const token = process.env.GRAFANA_TOKEN;
+  if (!url || !token) {
+    throw new Error(
+      "Missing Grafana credentials. Set GRAFANA_URL, GRAFANA_TOKEN (and optionally GRAFANA_PROM_DATASOURCE_UID) in .env.local",
+    );
+  }
+  return { url, token, promUid: process.env.GRAFANA_PROM_DATASOURCE_UID || undefined };
+}
+
+/**
+ * The Prometheus API base path through Grafana. When a datasource UID is
+ * configured we proxy through Grafana's datasource proxy; otherwise we assume a
+ * direct Prometheus proxy mount. Kept in one place so both query functions and
+ * the spike scripts agree on the path.
+ */
+function promBase({ url, promUid }: GrafanaEnv): string {
+  return promUid
+    ? `${url}/api/datasources/proxy/uid/${promUid}/api/v1`
+    : `${url}/api/v1`;
+}
+
+async function grafanaFetch<T>(fullUrl: string, e: GrafanaEnv): Promise<T> {
+  const res = await fetch(fullUrl, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${e.token}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Grafana ${res.status} on ${fullUrl}: ${text.slice(0, 500)}`);
+  }
+  return (await res.json()) as T;
+}
+
+export interface PromInstantSample {
+  metric: Record<string, string>;
+  value: number;
+  /** Unix seconds. */
+  t: number;
+}
+
+export type PromInstantResult = PromInstantSample[];
+
+export interface PromMatrixSeries {
+  metric: Record<string, string>;
+  points: MetricTrendPoint[];
+}
+
+export type PromMatrixResult = PromMatrixSeries[];
+
+/** Run a Prometheus instant query. Thin wrapper; parsing lives in parsePromInstant. */
+export async function queryInstant(promql: string): Promise<PromInstantResult> {
+  const e = env();
+  const url = `${promBase(e)}/query?query=${encodeURIComponent(promql)}`;
+  const json = await grafanaFetch<unknown>(url, e);
+  return parsePromInstant(json);
+}
+
+/** Run a Prometheus range query. Thin wrapper; parsing lives in parsePromMatrix. */
+export async function queryRange(
+  promql: string,
+  startSec: number,
+  endSec: number,
+  stepSec: number,
+): Promise<PromMatrixResult> {
+  const e = env();
+  const params = new URLSearchParams({
+    query: promql,
+    start: String(startSec),
+    end: String(endSec),
+    step: String(stepSec),
+  });
+  const url = `${promBase(e)}/query_range?${params.toString()}`;
+  const json = await grafanaFetch<unknown>(url, e);
+  return parsePromMatrix(json);
+}
+
+/** Coerce a Prometheus string-encoded sample value to number; NaN if unparseable. */
+function toNumber(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw === "string") return Number(raw);
+  return NaN;
+}
+
+/**
+ * PURE. Parse a Prometheus instant query response:
+ *   { data: { result: [{ metric: {}, value: [ts, "val"] }] } }
+ * Tolerates missing data/result, malformed value tuples, and NaN values
+ * (samples with non-finite values are dropped).
+ */
+export function parsePromInstant(json: unknown): PromInstantResult {
+  const result = (json as { data?: { result?: unknown } })?.data?.result;
+  if (!Array.isArray(result)) return [];
+  const out: PromInstantResult = [];
+  for (const r of result) {
+    const row = r as { metric?: Record<string, string>; value?: unknown };
+    const value = row?.value;
+    if (!Array.isArray(value) || value.length < 2) continue;
+    const t = toNumber(value[0]);
+    const v = toNumber(value[1]);
+    if (!Number.isFinite(v)) continue;
+    out.push({
+      metric: row.metric && typeof row.metric === "object" ? row.metric : {},
+      value: v,
+      t,
+    });
+  }
+  return out;
+}
+
+/**
+ * PURE. Parse a Prometheus range query response:
+ *   { data: { result: [{ metric: {}, values: [[ts, "val"], ...] }] } }
+ * into series of MetricTrendPoint. Unix-second timestamps are converted to ISO
+ * strings; NaN/non-finite sample values are dropped.
+ */
+export function parsePromMatrix(json: unknown): PromMatrixResult {
+  const result = (json as { data?: { result?: unknown } })?.data?.result;
+  if (!Array.isArray(result)) return [];
+  const out: PromMatrixResult = [];
+  for (const r of result) {
+    const row = r as { metric?: Record<string, string>; values?: unknown };
+    const values = Array.isArray(row?.values) ? row.values : [];
+    const points: MetricTrendPoint[] = [];
+    for (const pair of values) {
+      if (!Array.isArray(pair) || pair.length < 2) continue;
+      const ts = toNumber(pair[0]);
+      const v = toNumber(pair[1]);
+      if (!Number.isFinite(v) || !Number.isFinite(ts)) continue;
+      points.push({ t: new Date(ts * 1000).toISOString(), value: v });
+    }
+    out.push({
+      metric: row.metric && typeof row.metric === "object" ? row.metric : {},
+      points,
+    });
+  }
+  return out;
+}
+
+/**
+ * PURE. Given parsed series (instant or matrix), return the sorted, de-duplicated
+ * distinct values of a label key — used to discover tenants / integrations from
+ * metric labels.
+ */
+export function distinctLabelValues(
+  series: Array<{ metric: Record<string, string> }>,
+  label: string,
+): string[] {
+  const set = new Set<string>();
+  for (const s of series) {
+    const v = s?.metric?.[label];
+    if (typeof v === "string" && v.length > 0) set.add(v);
+  }
+  return [...set].sort();
+}

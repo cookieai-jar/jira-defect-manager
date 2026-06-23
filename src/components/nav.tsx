@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   BookOpen,
   Boxes,
+  HeartPulse,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -23,7 +24,7 @@ interface NavItem {
   /** If set, the item is shown only when config.dashboards[scope] is true. */
   scope?: Scope;
   /** If set, the item is shown only when config[<flag>] is not false. */
-  flag?: "siDashboard";
+  flag?: "siDashboard" | "tenantDashboard";
 }
 
 const ALL_ITEMS: NavItem[] = [
@@ -31,6 +32,7 @@ const ALL_ITEMS: NavItem[] = [
   { href: "/fr/poc", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
   { href: "/integrations", label: "Strategic Integrations", icon: Boxes, flag: "siDashboard" },
+  { href: "/tenants", label: "Tenant Health", icon: HeartPulse, flag: "tenantDashboard" },
   { href: "/p0", label: "White-glove Customers", icon: Star },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },

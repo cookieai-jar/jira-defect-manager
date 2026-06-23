@@ -64,6 +64,19 @@ export interface JiraIssue {
   url: string;
   description: string | null;
   comments: JiraComment[];
+  /** Parent issue (e.g. the Epic). null when the ticket has no parent. */
+  parent: { key: string; summary: string; type: string } | null;
+  /**
+   * Values of the "Customer" multi-select field (customfield_10044), e.g.
+   * ["Prudential Financial"]. This is the canonical join key to a tenant.
+   * Empty array when the field is unset.
+   */
+  customers: string[];
+}
+
+/** True when the issue's parent is an Epic. Used to flag tickets that still need an epic assigned. */
+export function hasEpicParent(issue: Pick<JiraIssue, "parent">): boolean {
+  return issue.parent?.type?.toLowerCase() === "epic";
 }
 
 export interface P0Customer {
@@ -78,6 +91,12 @@ export interface P0Customer {
 export interface AppConfig {
   jqls: Record<Scope, string>;
   dashboards: Record<Scope, boolean>;
+  /** JQL defining the universe of Strategic Integrations tickets to analyze. */
+  siJql: string;
+  /** Whether the Strategic Integrations dashboard is shown in the sidebar. */
+  siDashboard: boolean;
+  /** Whether the per-tenant Integrations Health dashboard is shown in the sidebar. */
+  tenantDashboard: boolean;
   sprintLengthDays: number;
   inactivityThresholdDays: number;
   pingThresholdDays: number;
