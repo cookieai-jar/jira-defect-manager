@@ -149,6 +149,52 @@ export function parsePromMatrix(json: unknown): PromMatrixResult {
   return out;
 }
 
+/** A Loki datasource we can query for tenant logs. */
+export interface LokiDatasource {
+  uid: string;
+  name: string;
+}
+
+/**
+ * List queryable Loki datasources, excluding the special-purpose ones
+ * (alert-state-history, usage-insights, cardinality) that don't hold app logs.
+ * Tenant data-plane logs are spread across these by hosting region.
+ */
+export async function listLokiDatasources(): Promise<LokiDatasource[]> {
+  const e = env();
+  const all = await grafanaFetch<Array<{ uid: string; name: string; type: string }>>(
+    `${e.url}/api/datasources`,
+    e,
+  );
+  return all
+    .filter((d) => d.type === "loki" && !/alert-state-history|usage-insights|cardinality/i.test(d.name))
+    .map((d) => ({ uid: d.uid, name: d.name }));
+}
+
+function lokiBase(e: GrafanaEnv, uid: string): string {
+  return `${e.url}/api/datasources/proxy/uid/${uid}/loki/api/v1`;
+}
+
+/**
+ * Run a Loki metric query (e.g. count_over_time/sum) as an instant query. The
+ * response shape matches Prometheus instant, so parsePromInstant handles it.
+ */
+export async function lokiCountQuery(uid: string, logql: string, now = Date.now()): Promise<PromInstantResult> {
+  const e = env();
+  const url = `${lokiBase(e, uid)}/query?query=${encodeURIComponent(logql)}&time=${now}000000`;
+  return parsePromInstant(await grafanaFetch<unknown>(url, e));
+}
+
+/** True when a Loki stream selector returns at least one line in the last `hours`. */
+export async function lokiStreamExists(uid: string, selector: string, hours = 6, now = Date.now()): Promise<boolean> {
+  const e = env();
+  const end = `${now}000000`;
+  const start = `${now - hours * 3600 * 1000}000000`;
+  const url = `${lokiBase(e, uid)}/query_range?query=${encodeURIComponent(selector)}&start=${start}&end=${end}&limit=1&direction=backward`;
+  const r = await grafanaFetch<{ data?: { result?: unknown[] } }>(url, e);
+  return Array.isArray(r?.data?.result) && r.data.result.length > 0;
+}
+
 /**
  * Fetch all currently-active Grafana-managed alerts (Alertmanager v2). Thin;
  * filtering/shaping lives in parseTenantAlerts.

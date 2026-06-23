@@ -95,6 +95,20 @@ match directly. Phase 1 needs a slug→display-name map: fuzzy auto-match (slugi
 name and compare) plus a manual override table in the in-app tenant registry. Note slugs
 can carry env suffixes (`-prod`) and there can be near-dupes (`crb` vs `customersbank-prod`).
 
+### Extraction counts from logs — WIRED ✅ (regional Loki)
+- The extractor logs `START - Extracting data source` / `FINISH - Extracting data source`
+  per data-source (extractor_worker.go); counting FINISH lines is the truest count of
+  actual extractions (more accurate than `veza_platform_extraction_total`).
+- **Logs are REGIONAL** (metrics are central): a tenant's data-plane logs live in ONE
+  regional Loki (namespace `<tenant>-dp`), e.g. bcgprod → `grafanacloud-vezalondon-logs-eu-west-2`,
+  cluster cookie02-prod. NOT `-cp` (that's the control plane). Implementation discovers
+  the tenant's region by probing Loki datasources in parallel (cached), then counts via
+  `sum by (datasource_type)(count_over_time({namespace="<tenant>-dp"} |= \`FINISH - Extracting data source\` | json [24h]))`.
+- Fields on the FINISH line: datasource_type, datasource_id, external_id, provider_id, job_id, trace_id.
+- Live bcgprod 24h: START 308,577 / FINISH 308,623 (sharepoint 93k, ms_teams 23k). The
+  detail report now uses these as the authoritative extraction counts (sources.loki=true),
+  falling back to the metric when a tenant's logs can't be located.
+
 ### Error logging (the specific ask) — RESOLVED ✅ (source-confirmed)
 - **Extraction errors:** counter `veza_platform_extraction_errors_total`; log detail in **Loki**
   `job="extraction"` with fields `datasource_type`, `provider_id`, `datasource_id`,

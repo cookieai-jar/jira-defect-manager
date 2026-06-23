@@ -14,6 +14,7 @@ import type {
   ThresholdRule,
 } from "@/types/tenant";
 import { resolveDisplayName, makeNameResolver, fetchCustomerNames } from "@/lib/tenant-mapping";
+import { extractionLogStats } from "@/lib/tenant-logs";
 
 /**
  * Per-tenant health report assembly. Grafana is the spine (metrics + alerts),
@@ -309,6 +310,20 @@ export async function buildTenantReport(
     const list = alertsByIntegration.get(a.integration) ?? [];
     list.push(a);
     alertsByIntegration.set(a.integration, list);
+  }
+
+  // --- Log-based extraction counts (authoritative) ---
+  // FINISH lines per data-source are the truest count of actual extractions;
+  // override the metric-derived counts when the tenant's regional logs are found.
+  try {
+    const logs = await extractionLogStats(tenant, windowHours);
+    if (logs.dsUid) {
+      extractions = logs.finishByType;
+      if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
+      sources.loki = true;
+    }
+  } catch (e) {
+    console.warn(`[tenant-health] extraction-log count failed for ${tenant}:`, e instanceof Error ? e.message : e);
   }
 
   const integrations = buildIntegrationHealth({
