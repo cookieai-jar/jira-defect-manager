@@ -170,6 +170,32 @@ const FIELDS = [
   CUSTOMER_FIELD,
 ].join(",");
 
+/**
+ * Fetch the allowed-value option list for the Customer field (customfield_10044)
+ * — the authoritative set of customer display names. Reads the field's first
+ * context, then pages its options.
+ */
+export async function fetchCustomerFieldOptions(): Promise<string[]> {
+  const contexts = await jiraFetch<{ values?: Array<{ id: string }> }>(
+    `/rest/api/3/field/${CUSTOMER_FIELD}/context?maxResults=50`,
+  );
+  const ctxId = contexts.values?.[0]?.id;
+  if (!ctxId) return [];
+  const names: string[] = [];
+  let startAt = 0;
+  for (;;) {
+    const page = await jiraFetch<{ values?: Array<{ value?: string }>; isLast?: boolean }>(
+      `/rest/api/3/field/${CUSTOMER_FIELD}/context/${ctxId}/option?maxResults=100&startAt=${startAt}`,
+    );
+    const vals = page.values ?? [];
+    for (const o of vals) if (o.value) names.push(o.value);
+    if (page.isLast || vals.length === 0) break;
+    startAt += vals.length;
+    if (startAt > 10000) break; // safety bound
+  }
+  return names;
+}
+
 export async function searchIssues(jql: string, maxResults = 200): Promise<JiraIssue[]> {
   const e = env();
   const out: JiraIssue[] = [];

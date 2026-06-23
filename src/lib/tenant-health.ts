@@ -13,6 +13,7 @@ import type {
   TenantJiraTicket,
   ThresholdRule,
 } from "@/types/tenant";
+import { resolveDisplayName, makeNameResolver, fetchCustomerNames } from "@/lib/tenant-mapping";
 
 /**
  * Per-tenant health report assembly. Grafana is the spine (metrics + alerts),
@@ -20,28 +21,6 @@ import type {
  * code); the model is not involved. Pure helpers are unit-tested; buildTenantReport
  * is exercised by a live smoke test.
  */
-
-/**
- * Grafana `tenant_id` is a slug (e.g. "bcgprod"); JIRA's Customer field uses a
- * display name (e.g. "BCG"). They don't match directly. This override map is the
- * source of truth; unknown slugs fall back to a best-effort prettified guess.
- */
-export const TENANT_NAME_OVERRIDES: Record<string, string> = {
-  bcgprod: "BCG",
-};
-
-/** Best-effort display name for a tenant slug (override map wins). */
-export function normalizeTenantDisplayName(slug: string): string {
-  const o = TENANT_NAME_OVERRIDES[slug];
-  if (o) return o;
-  // Fallback: strip common env suffixes, split on separators, title-case.
-  const base = slug.replace(/[-_](prod|staging|stg|dev|test|cp)$/i, "");
-  return base
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
 
 /** JQL to fetch tickets whose Customer multi-select (customfield_10044) matches. */
 export function jiraCustomerJql(displayName: string): string {
@@ -125,7 +104,10 @@ interface FleetInputs {
  * is the union of tenants seen in metrics + alerts. Sorted worst-health first,
  * then most active alerts, then name.
  */
-export function buildFleetSummaries(inputs: FleetInputs): FleetTenantSummary[] {
+export function buildFleetSummaries(
+  inputs: FleetInputs,
+  resolveName: (slug: string) => string = (s) => resolveDisplayName(s),
+): FleetTenantSummary[] {
   const extractionsByTenant = new Map<string, number>();
   const integrationsByTenant = new Map<string, Set<string>>();
   for (const r of inputs.extractionRows) {
@@ -156,7 +138,7 @@ export function buildFleetSummaries(inputs: FleetInputs): FleetTenantSummary[] {
         : null;
     return {
       tenant,
-      displayName: normalizeTenantDisplayName(tenant),
+      displayName: resolveName(tenant),
       extractions: Math.round(extractionsByTenant.get(tenant) ?? 0),
       extractionErrors,
       integrations: integrationsByTenant.get(tenant)?.size ?? 0,
@@ -282,7 +264,8 @@ export async function buildTenantReport(
   const windowHours = opts.windowHours ?? 24;
   const w = `${windowHours}h`;
   const sel = `{tenant_id="${tenant}"}`;
-  const displayName = normalizeTenantDisplayName(tenant);
+  const customers = await fetchCustomerNames();
+  const displayName = resolveDisplayName(tenant, customers);
 
   const sources = { grafanaMetrics: false, grafanaAlerts: false, jira: false, loki: false };
 
@@ -405,7 +388,11 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
     console.warn("[tenant-health] fleet alerts query failed:", e instanceof Error ? e.message : e);
   }
 
-  const tenants = buildFleetSummaries({ extractionRows, errorsByTenant, alertsByTenant });
+  const customers = await fetchCustomerNames();
+  const tenants = buildFleetSummaries(
+    { extractionRows, errorsByTenant, alertsByTenant },
+    makeNameResolver(customers),
+  );
   return {
     generatedAt: new Date().toISOString(),
     windowHours,

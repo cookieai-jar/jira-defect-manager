@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  normalizeTenantDisplayName,
   jiraCustomerJql,
   worstOf,
   classifyErrors,
@@ -8,6 +7,7 @@ import {
   buildTopIssues,
   buildIntegrationHealth,
 } from "@/lib/tenant-health";
+import { makeNameResolver } from "@/lib/tenant-mapping";
 import type { Severity, TenantAlert } from "@/types/tenant";
 
 function alert(over: Partial<TenantAlert> = {}): TenantAlert {
@@ -24,17 +24,6 @@ function alert(over: Partial<TenantAlert> = {}): TenantAlert {
     ...over,
   };
 }
-
-describe("normalizeTenantDisplayName", () => {
-  it("uses the override map", () => {
-    expect(normalizeTenantDisplayName("bcgprod")).toBe("BCG");
-  });
-  it("falls back to stripping env suffix + title-casing", () => {
-    expect(normalizeTenantDisplayName("acme-corp-prod")).toBe("Acme Corp");
-    expect(normalizeTenantDisplayName("wajax")).toBe("Wajax");
-    expect(normalizeTenantDisplayName("customersbank-prod")).toBe("Customersbank");
-  });
-});
 
 describe("jiraCustomerJql", () => {
   it("targets customfield_10044 and escapes quotes", () => {
@@ -174,7 +163,7 @@ describe("buildFleetSummaries", () => {
   };
 
   it("aggregates extractions + distinct integrations per tenant (rounded)", () => {
-    const rows = buildFleetSummaries(inputs);
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]));
     const bcg = rows.find((r) => r.tenant === "bcgprod")!;
     expect(bcg.extractions).toBe(151); // 100.7 + 50 rounded
     expect(bcg.integrations).toBe(2); // okta, s3
@@ -182,7 +171,7 @@ describe("buildFleetSummaries", () => {
   });
 
   it("counts only firing alerts by severity and picks worst for top issue", () => {
-    const rows = buildFleetSummaries(inputs);
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]));
     const bcg = rows.find((r) => r.tenant === "bcgprod")!;
     expect(bcg.warningAlerts).toBe(1);
     expect(bcg.criticalAlerts).toBe(0);
@@ -191,7 +180,7 @@ describe("buildFleetSummaries", () => {
   });
 
   it("includes alert-only tenants (no metrics) and sorts worst-health first", () => {
-    const rows = buildFleetSummaries(inputs);
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]));
     expect(rows.map((r) => r.tenant)).toContain("alertonly");
     // alertonly has a critical alert -> lowest score -> first
     expect(rows[0].tenant).toBe("alertonly");
@@ -199,7 +188,7 @@ describe("buildFleetSummaries", () => {
   });
 
   it("healthyco with no alerts/errors scores 100", () => {
-    const rows = buildFleetSummaries(inputs);
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]));
     const h = rows.find((r) => r.tenant === "healthyco")!;
     expect(h.healthScore).toBe(100);
     expect(h.topIssue).toBeNull();
