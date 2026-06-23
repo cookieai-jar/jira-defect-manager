@@ -323,7 +323,14 @@ export async function buildTenantReport(
   let jiraTickets: TenantJiraTicket[] = [];
   try {
     const issues = await searchIssues(jiraCustomerJql(displayName), opts.jiraLimit ?? 50);
-    jiraTickets = issues.map((i) => ({ key: i.key, summary: i.summary, status: i.status, url: i.url }));
+    jiraTickets = issues.map((i) => ({
+      key: i.key,
+      summary: i.summary,
+      status: i.status,
+      priority: i.priority,
+      done: i.statusCategory === "done",
+      url: i.url,
+    }));
     sources.jira = true;
   } catch (e) {
     console.warn(`[tenant-health] JIRA query failed for ${tenant}:`, e instanceof Error ? e.message : e);

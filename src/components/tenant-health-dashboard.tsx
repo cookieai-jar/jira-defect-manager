@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Boxes,
+  ChevronRight,
   ExternalLink,
   HeartPulse,
   Inbox,
@@ -27,6 +28,7 @@ import type {
   TenantHealthReport,
   TenantJiraTicket,
 } from "@/types/tenant";
+import { groupTicketsByProject, type ProjectTicketGroup } from "@/lib/tenant-jira";
 
 interface ReportResponse {
   report: TenantHealthReport | null;
@@ -100,6 +102,11 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
         const s = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
         return s !== 0 ? s : b.extractions - a.extractions;
       }),
+    [report],
+  );
+
+  const ticketGroups = useMemo(
+    () => groupTicketsByProject(report?.jiraTickets ?? []),
     [report],
   );
 
@@ -338,7 +345,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             </Card>
           </div>
 
-          {/* 8. Linked JIRA tickets */}
+          {/* 8. Linked JIRA tickets — by project, priority-sorted, Done collapsed */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -346,11 +353,11 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               </CardTitle>
               <Badge>{report.jiraTickets.length}</Badge>
             </CardHeader>
-            <CardBody className="space-y-1.5">
+            <CardBody className="space-y-4">
               {report.jiraTickets.length === 0 ? (
                 <p className="text-sm text-fg-muted">No linked JIRA tickets.</p>
               ) : (
-                report.jiraTickets.map((t) => <JiraTicketRow key={t.key} ticket={t} />)
+                ticketGroups.map((g) => <ProjectTicketSection key={g.project} group={g} />)
               )}
             </CardBody>
           </Card>
@@ -433,9 +440,22 @@ function GraphWriteRow({ write }: { write: GraphWrite }) {
   );
 }
 
+/** Priority pill color: P0/highest = danger, P1/high = warning, else muted. */
+function priorityClass(priority: string | null): string {
+  const p = (priority ?? "").toLowerCase();
+  if (/p0|blocker|highest/.test(p)) return "border-danger/40 bg-danger/10 text-danger";
+  if (/p1|critical|high/.test(p)) return "border-warning/40 bg-warning/10 text-warning";
+  return "border-border-strong bg-bg-muted text-fg-muted";
+}
+
 function JiraTicketRow({ ticket }: { ticket: TenantJiraTicket }) {
   return (
     <div className="flex items-center gap-2 rounded border border-border bg-bg-muted/30 px-3 py-2">
+      {ticket.priority && (
+        <Badge className={cn("border shrink-0 font-mono", priorityClass(ticket.priority))}>
+          {ticket.priority}
+        </Badge>
+      )}
       <a
         href={ticket.url}
         target="_blank"
@@ -447,6 +467,55 @@ function JiraTicketRow({ ticket }: { ticket: TenantJiraTicket }) {
       </a>
       <span className="text-sm text-fg-muted truncate flex-1">{ticket.summary}</span>
       <StatusChip status={ticket.status} />
+    </div>
+  );
+}
+
+function ProjectTicketSection({ group }: { group: ProjectTicketGroup }) {
+  const [showDone, setShowDone] = useState(false);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-fg">{group.project}</h3>
+        <span className="text-[11px] text-fg-subtle">
+          {group.open.length} open
+          {group.done.length > 0 && ` · ${group.done.length} done`}
+        </span>
+      </div>
+
+      {group.open.length === 0 && group.done.length === 0 ? (
+        <p className="text-[11px] text-fg-subtle pl-0.5">No tickets.</p>
+      ) : (
+        <>
+          {group.open.map((t) => (
+            <JiraTicketRow key={t.key} ticket={t} />
+          ))}
+          {group.open.length === 0 && (
+            <p className="text-[11px] text-fg-subtle pl-0.5">No open tickets.</p>
+          )}
+
+          {group.done.length > 0 && (
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => setShowDone((v) => !v)}
+                aria-expanded={showDone}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-fg-muted hover:text-fg"
+              >
+                <ChevronRight className={cn("h-3 w-3 transition-transform", showDone && "rotate-90")} />
+                {showDone ? "Hide" : "Show"} {group.done.length} done
+              </button>
+              {showDone && (
+                <div className="space-y-1.5 opacity-70">
+                  {group.done.map((t) => (
+                    <JiraTicketRow key={t.key} ticket={t} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
