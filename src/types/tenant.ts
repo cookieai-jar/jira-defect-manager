@@ -148,6 +148,8 @@ export interface TenantJiraTicket {
   status: string;
   /** JIRA priority name (e.g. "P0", "High"), or null when unset. */
   priority: string | null;
+  /** Assignee display name, or null when unassigned. */
+  assignee: string | null;
   /** True when the ticket's status category is Done. */
   done: boolean;
   url: string;

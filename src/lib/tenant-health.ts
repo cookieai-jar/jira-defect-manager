@@ -328,6 +328,7 @@ export async function buildTenantReport(
       summary: i.summary,
       status: i.status,
       priority: i.priority,
+      assignee: i.assignee,
       done: i.statusCategory === "done",
       url: i.url,
     }));

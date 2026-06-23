@@ -466,6 +466,15 @@ function JiraTicketRow({ ticket }: { ticket: TenantJiraTicket }) {
         <ExternalLink className="h-3 w-3" />
       </a>
       <span className="text-sm text-fg-muted truncate flex-1">{ticket.summary}</span>
+      <span
+        className={cn(
+          "text-[11px] shrink-0 max-w-[9rem] truncate",
+          ticket.assignee ? "text-fg-muted" : "text-fg-subtle italic",
+        )}
+        title={ticket.assignee ?? "Unassigned"}
+      >
+        {ticket.assignee ?? "Unassigned"}
+      </span>
       <StatusChip status={ticket.status} />
     </div>
   );

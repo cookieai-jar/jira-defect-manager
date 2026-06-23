@@ -9,7 +9,7 @@ import {
 import type { TenantJiraTicket } from "@/types/tenant";
 
 function tkt(over: Partial<TenantJiraTicket> & { key: string }): TenantJiraTicket {
-  return { summary: "s", status: "Open", priority: null, done: false, url: "u", ...over };
+  return { summary: "s", status: "Open", priority: null, assignee: null, done: false, url: "u", ...over };
 }
 
 describe("ticketProject", () => {
