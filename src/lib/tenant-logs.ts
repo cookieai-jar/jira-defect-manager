@@ -31,11 +31,42 @@ function countByTypeQuery(tenant: string, line: string, windowHours: number): st
   return `sum by (datasource_type) (count_over_time(${tenantDpSelector(tenant)} |= \`${line}\` | json [${windowHours}h]))`;
 }
 
-export function finishByTypeQuery(tenant: string, windowHours = 24): string {
-  return countByTypeQuery(tenant, FINISH_LINE, windowHours);
-}
 export function errorByTypeQuery(tenant: string, windowHours = 24): string {
   return countByTypeQuery(tenant, ERROR_LINE, windowHours);
+}
+
+/**
+ * Provider window is fixed and short (1h). Counting DISTINCT providers requires
+ * grouping by provider_id; doing it for ALL integrations at once
+ * (count by (datasource_type, provider_id) ...) blows Loki's 2000-series cap on
+ * big tenants, so we instead fan out ONE query per integration type (each is
+ * low-cardinality: providers for a single type). Provider presence is stable
+ * hour-to-hour, so 1h is a faithful "providers actively extracting" snapshot.
+ */
+export const PROVIDER_WINDOW_HOURS = 1;
+
+/** LogQL: distinct providers for ONE integration type over the provider window. */
+export function providersForTypeQuery(tenant: string, datasourceType: string, windowHours = PROVIDER_WINDOW_HOURS): string {
+  return `count(count by (provider_id) (count_over_time(${tenantDpSelector(tenant)} |= \`${FINISH_LINE}\` | json | datasource_type=\`${datasourceType}\` [${windowHours}h])))`;
+}
+
+/** LogQL: distinct providers tenant-wide over the provider window. */
+export function totalProvidersQuery(tenant: string, windowHours = PROVIDER_WINDOW_HOURS): string {
+  return `count(count by (provider_id) (count_over_time(${tenantDpSelector(tenant)} |= \`${FINISH_LINE}\` | json [${windowHours}h])))`;
+}
+
+/** Run async `fn` over `items` with bounded concurrency, preserving order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 // --- regional datasource discovery (cached) -----------------------------------
@@ -71,9 +102,11 @@ export function _clearLogDatasourceCache(): void {
 
 export interface ExtractionLogStats {
   dsUid: string | null;
-  /** FINISH-line count per datasource_type (= integration). */
-  finishByType: Map<string, number>;
-  /** Error-line count per datasource_type. */
+  /** Distinct providers per integration (datasource_type) over the provider window. */
+  providersByType: Map<string, number>;
+  /** Distinct providers tenant-wide, or null when the grouped query was unavailable. */
+  totalProviders: number | null;
+  /** Extraction-error-line count per datasource_type over `windowHours`. */
   errorByType: Map<string, number>;
 }
 
@@ -86,17 +119,36 @@ function toMap(result: Array<{ metric: Record<string, string>; value: number }>)
   return m;
 }
 
+/** Scalar value out of a Loki count() result (single series, no labels). */
+function scalar(result: Array<{ value: number }>): number | null {
+  return result.length > 0 ? Math.round(result[0].value) : null;
+}
+
 /**
- * Count actual extractions (FINISH lines) and extraction errors per integration
- * for a tenant, from its regional Loki. Returns empty maps + null dsUid when the
- * tenant's logs can't be located (caller falls back to the metric).
+ * Per-integration distinct-provider counts + extraction errors for a tenant,
+ * from its regional Loki. Providers are fanned out one query per inventory type
+ * (bounded concurrency) over a short window; errors use `windowHours`. Empty +
+ * null dsUid when logs can't be located.
  */
-export async function extractionLogStats(tenant: string, windowHours = 24): Promise<ExtractionLogStats> {
+export async function extractionLogStats(
+  tenant: string,
+  inventory: string[],
+  windowHours = 24,
+): Promise<ExtractionLogStats> {
   const dsUid = await findTenantLogDatasource(tenant);
-  if (!dsUid) return { dsUid: null, finishByType: new Map(), errorByType: new Map() };
-  const [finish, error] = await Promise.all([
-    lokiCountQuery(dsUid, finishByTypeQuery(tenant, windowHours)).catch(() => []),
+  if (!dsUid) {
+    return { dsUid: null, providersByType: new Map(), totalProviders: null, errorByType: new Map() };
+  }
+  // Base integration types only (skip CSC pairs); fan out distinct-provider counts.
+  const types = inventory.filter((t) => !t.includes("-"));
+  const [total, error, perType] = await Promise.all([
+    lokiCountQuery(dsUid, totalProvidersQuery(tenant)).catch(() => []),
     lokiCountQuery(dsUid, errorByTypeQuery(tenant, windowHours)).catch(() => []),
+    mapLimit(types, 16, async (ty) => {
+      const r = await lokiCountQuery(dsUid, providersForTypeQuery(tenant, ty)).catch(() => []);
+      return [ty, scalar(r) ?? 0] as const;
+    }),
   ]);
-  return { dsUid, finishByType: toMap(finish), errorByType: toMap(error) };
+  const providersByType = new Map(perType.filter(([, n]) => n > 0));
+  return { dsUid, providersByType, totalProviders: scalar(total), errorByType: toMap(error) };
 }

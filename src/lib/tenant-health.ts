@@ -183,7 +183,12 @@ export function buildTopIssues(
 }
 
 interface IntegrationInputs {
-  extractions: Map<string, number>;
+  /** Base integration types (from the extraction metric) — the inventory. */
+  inventory: string[];
+  /** Distinct providers per integration (from logs); empty when logs unavailable. */
+  providers: Map<string, number>;
+  /** Whether provider data is present (logs available) — distinguishes 0 from "unknown". */
+  hasProviderData: boolean;
   extractionErrors: Map<string, number>;
   parseDurationMs: Map<string, number>;
   parseTasks: Map<string, number>;
@@ -191,22 +196,23 @@ interface IntegrationInputs {
 }
 
 /**
- * PURE. Combine the per-agent_type metric maps + grouped alerts into
- * IntegrationHealth[]. Inventory = base connectors (extraction agent_types plus
- * non-CSC parse agent_types); CSC pair series (containing "-") are excluded as
- * relationship-parse, not integrations. Sorted by severity then extraction volume.
+ * PURE. Combine inventory + per-integration provider/error/parse data + grouped
+ * alerts into IntegrationHealth[]. Inventory = base connectors (metric extraction
+ * agent_types ∪ provider keys ∪ non-CSC parse agent_types); CSC pair series
+ * (containing "-") are excluded as relationship-parse. Sorted by severity, then
+ * provider count, then name.
  */
 export function buildIntegrationHealth(
   inputs: IntegrationInputs,
   rules: ThresholdRule[] = DEFAULT_THRESHOLDS,
 ): IntegrationHealth[] {
-  const names = new Set<string>(inputs.extractions.keys());
+  const names = new Set<string>(inputs.inventory);
+  for (const k of inputs.providers.keys()) names.add(k);
   for (const k of inputs.parseTasks.keys()) if (!k.includes("-")) names.add(k);
 
   const rankSev: Record<Severity, number> = { critical: 0, warning: 1, ok: 2 };
   const rows: IntegrationHealth[] = [...names].map((integration) => {
-    // Prometheus increase() extrapolates to fractional values; round for display.
-    const extractions = Math.round(inputs.extractions.get(integration) ?? 0);
+    const providers = inputs.hasProviderData ? Math.round(inputs.providers.get(integration) ?? 0) : null;
     const extractionErrors = Math.round(inputs.extractionErrors.get(integration) ?? 0);
     const rawTasks = inputs.parseTasks.get(integration) ?? 0;
     const parseTasks = Math.round(rawTasks);
@@ -227,12 +233,12 @@ export function buildIntegrationHealth(
       ...alerts.map((a) => a.severity),
       ...breaches.map((b) => b.severity),
     ]);
-    return { integration, extractions, extractionErrors, parseAvgMs, parseTasks, alerts, breaches, severity };
+    return { integration, providers, extractionErrors, parseAvgMs, parseTasks, alerts, breaches, severity };
   });
 
   return rows.sort((a, b) => {
     const s = rankSev[a.severity] - rankSev[b.severity];
-    return s !== 0 ? s : b.extractions - a.extractions;
+    return s !== 0 ? s : (b.providers ?? 0) - (a.providers ?? 0) || a.integration.localeCompare(b.integration);
   });
 }
 
@@ -271,7 +277,9 @@ export async function buildTenantReport(
   const sources = { grafanaMetrics: false, grafanaAlerts: false, jira: false, loki: false };
 
   // --- Grafana metrics (instant, windowed increase) ---
-  let extractions = new Map<string, number>();
+  // The extraction metric is used only for the integration INVENTORY (which
+  // connectors exist); per-integration counts come from logs (distinct providers).
+  let inventory: string[] = [];
   let extractionErrors = new Map<string, number>();
   let parseDurationMs = new Map<string, number>();
   let parseTasks = new Map<string, number>();
@@ -284,7 +292,7 @@ export async function buildTenantReport(
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_total${sel}[${w}]))`),
       queryInstant(`sum by (entity_type, operation) (increase(veza_platform_parser_neo4j_writes_total${sel}[${w}]))`),
     ]);
-    extractions = byLabel(ext, "agent_type");
+    inventory = [...byLabel(ext, "agent_type").keys()];
     extractionErrors = byLabel(err, "agent_type");
     parseDurationMs = byLabel(dur, "agent_type");
     parseTasks = byLabel(tasks, "agent_type");
@@ -312,22 +320,29 @@ export async function buildTenantReport(
     alertsByIntegration.set(a.integration, list);
   }
 
-  // --- Log-based extraction counts (authoritative) ---
-  // FINISH lines per data-source are the truest count of actual extractions;
-  // override the metric-derived counts when the tenant's regional logs are found.
+  // --- Log-based provider counts (the per-integration "Providers" number) ---
+  // Distinct providers (accounts/instances) actively extracting per integration,
+  // from the tenant's regional Loki. Errors also come from logs when available.
+  let providers = new Map<string, number>();
+  let totalProviders: number | null = null;
+  let hasProviderData = false;
   try {
-    const logs = await extractionLogStats(tenant, windowHours);
+    const logs = await extractionLogStats(tenant, inventory, windowHours);
     if (logs.dsUid) {
-      extractions = logs.finishByType;
+      providers = logs.providersByType;
+      totalProviders = logs.totalProviders;
+      hasProviderData = true;
       if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
       sources.loki = true;
     }
   } catch (e) {
-    console.warn(`[tenant-health] extraction-log count failed for ${tenant}:`, e instanceof Error ? e.message : e);
+    console.warn(`[tenant-health] provider-log count failed for ${tenant}:`, e instanceof Error ? e.message : e);
   }
 
   const integrations = buildIntegrationHealth({
-    extractions,
+    inventory,
+    providers,
+    hasProviderData,
     extractionErrors,
     parseDurationMs,
     parseTasks,
@@ -352,7 +367,6 @@ export async function buildTenantReport(
     console.warn(`[tenant-health] JIRA query failed for ${tenant}:`, e instanceof Error ? e.message : e);
   }
 
-  const totalExtractions = [...extractions.values()].reduce((n, v) => n + v, 0);
   const totalErrors = [...extractionErrors.values()].reduce((n, v) => n + v, 0);
 
   return {
@@ -369,7 +383,7 @@ export async function buildTenantReport(
     topIssues: buildTopIssues(integrations, alerts),
     totals: {
       integrations: integrations.length,
-      extractions: Math.round(totalExtractions),
+      providers: totalProviders,
       extractionErrors: Math.round(totalErrors),
       activeAlerts: alerts.filter((a) => a.state === "firing").length,
     },

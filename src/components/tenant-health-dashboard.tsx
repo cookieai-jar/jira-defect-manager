@@ -100,7 +100,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
     () =>
       [...(report?.integrations ?? [])].sort((a, b) => {
         const s = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
-        return s !== 0 ? s : b.extractions - a.extractions;
+        return s !== 0 ? s : (b.providers ?? 0) - (a.providers ?? 0);
       }),
     [report],
   );
@@ -222,9 +222,9 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             />
             <Stat
               icon={<Network className="h-4 w-4" />}
-              label="Extractions"
-              hint={`last ${report.windowHours}h`}
-              value={report.totals.extractions}
+              label="Providers"
+              hint="actively extracting"
+              value={report.totals.providers ?? 0}
             />
             <Stat
               icon={<AlertTriangle className="h-4 w-4 text-danger" />}
@@ -278,7 +278,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                     <thead className="sticky top-0 bg-bg-card z-10">
                       <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
                         <th className="text-left font-medium px-4 py-2">Integration</th>
-                        <th className="text-right font-medium px-3 py-2">Extractions</th>
+                        <th className="text-right font-medium px-3 py-2">Providers</th>
                         <th className="text-right font-medium px-3 py-2">Errors</th>
                         <th className="text-right font-medium px-3 py-2">Parse avg</th>
                         <th className="text-right font-medium px-3 py-2">Parse tasks</th>
@@ -393,7 +393,7 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
     <tr className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors">
       <td className="px-4 py-1.5 font-medium text-fg">{it.integration}</td>
       <td className="px-3 py-1.5 text-right font-mono text-fg-muted">
-        {it.extractions.toLocaleString()}
+        {it.providers == null ? "—" : it.providers.toLocaleString()}
       </td>
       <td
         className={cn(

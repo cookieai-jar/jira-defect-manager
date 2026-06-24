@@ -56,8 +56,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", extractions: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", extractions: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
     expect(
@@ -74,7 +74,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", extractions: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -90,9 +90,11 @@ describe("buildTopIssues", () => {
 });
 
 describe("buildIntegrationHealth", () => {
-  it("builds inventory from extraction + non-CSC parse, excludes CSC pairs, computes parseAvg + severity, sorts", () => {
+  it("unions inventory + provider keys + non-CSC parse, excludes CSC pairs, computes providers/parse/severity, sorts", () => {
     const rows = buildIntegrationHealth({
-      extractions: new Map([["okta", 100], ["s3", 50]]),
+      inventory: ["okta", "s3"],
+      providers: new Map([["okta", 12], ["s3", 4]]),
+      hasProviderData: true,
       extractionErrors: new Map([["s3", 3]]),
       parseDurationMs: new Map([["okta", 2000], ["ad_base", 400], ["awsiam-okta", 9999]]),
       parseTasks: new Map([["okta", 10], ["ad_base", 4], ["awsiam-okta", 5]]),
@@ -105,6 +107,7 @@ describe("buildIntegrationHealth", () => {
     expect(names).not.toContain("awsiam-okta"); // CSC pair excluded
 
     const okta = rows.find((r) => r.integration === "okta")!;
+    expect(okta.providers).toBe(12);
     expect(okta.parseAvgMs).toBe(200); // 2000ms / 10 tasks
     expect(okta.severity).toBe("ok");
 
@@ -119,14 +122,17 @@ describe("buildIntegrationHealth", () => {
     );
   });
 
-  it("parseAvgMs is null when no parse tasks", () => {
+  it("providers is null when provider data is unavailable (no logs)", () => {
     const rows = buildIntegrationHealth({
-      extractions: new Map([["okta", 5]]),
+      inventory: ["okta"],
+      providers: new Map(),
+      hasProviderData: false,
       extractionErrors: new Map(),
       parseDurationMs: new Map(),
       parseTasks: new Map(),
       alertsByIntegration: new Map(),
     });
+    expect(rows[0].providers).toBeNull();
     expect(rows[0].parseAvgMs).toBeNull();
   });
 });

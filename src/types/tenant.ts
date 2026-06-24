@@ -123,7 +123,8 @@ export interface TenantIncident {
 export interface IntegrationHealth {
   /** The agent_type, e.g. "okta", "sharepoint", "awsiam". */
   integration: string;
-  extractions: number;
+  /** Distinct providers (accounts/instances) extracting this integration; null when logs unavailable. */
+  providers: number | null;
   extractionErrors: number;
   /** Windowed avg parse ms per task (null when no parse tasks in window). */
   parseAvgMs: number | null;
@@ -216,7 +217,8 @@ export interface TenantHealthReport {
   /** Headline totals for the summary stats row. */
   totals: {
     integrations: number;
-    extractions: number;
+    /** Distinct providers (accounts/instances) extracting for this tenant. */
+    providers: number | null;
     extractionErrors: number;
     activeAlerts: number;
   };

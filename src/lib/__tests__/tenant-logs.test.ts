@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   tenantDpSelector,
   extractionProbeSelector,
-  finishByTypeQuery,
+  providersForTypeQuery,
+  totalProvidersQuery,
   errorByTypeQuery,
 } from "@/lib/tenant-logs";
 
@@ -20,16 +21,22 @@ describe("extractionProbeSelector", () => {
   });
 });
 
-describe("finishByTypeQuery", () => {
-  it("counts FINISH lines per datasource_type over the window", () => {
-    expect(finishByTypeQuery("bcgprod", 24)).toBe(
-      'sum by (datasource_type) (count_over_time({namespace="bcgprod-dp"} |= `FINISH - Extracting data source` | json [24h]))',
+describe("providersForTypeQuery", () => {
+  it("counts distinct providers for one integration type (default 1h window)", () => {
+    expect(providersForTypeQuery("bcgprod", "sharepoint")).toBe(
+      'count(count by (provider_id) (count_over_time({namespace="bcgprod-dp"} |= `FINISH - Extracting data source` | json | datasource_type=`sharepoint` [1h])))',
     );
   });
-  it("defaults to a 24h window and honors overrides", () => {
-    expect(finishByTypeQuery("acme")).toContain("[24h]");
-    expect(finishByTypeQuery("acme", 6)).toContain("[6h]");
-    expect(finishByTypeQuery("acme", 6)).toContain('{namespace="acme-dp"}');
+  it("honors a window override", () => {
+    expect(providersForTypeQuery("acme", "okta", 2)).toContain("[2h]");
+  });
+});
+
+describe("totalProvidersQuery", () => {
+  it("counts distinct providers tenant-wide (default 1h window)", () => {
+    expect(totalProvidersQuery("bcgprod")).toBe(
+      'count(count by (provider_id) (count_over_time({namespace="bcgprod-dp"} |= `FINISH - Extracting data source` | json [1h])))',
+    );
   });
 });
 
