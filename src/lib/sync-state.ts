@@ -72,3 +72,69 @@ export function finishSyncState(scope: Scope, error: string | null = null) {
     error,
   });
 }
+
+/** A row from the sync_runs table (db.latestSyncRun). Timestamps are SQLite UTC. */
+export interface SyncRunRow {
+  started_at?: string | null;
+  finished_at?: string | null;
+  status?: string | null;
+  issues_pulled?: number | null;
+  issues_analyzed?: number | null;
+  error?: string | null;
+}
+
+/** A background run older than this with no finish is treated as no longer running. */
+const RUNNING_STALE_MS = 30 * 60 * 1000;
+
+/** SQLite "YYYY-MM-DD HH:MM:SS" (UTC) -> ISO, or null. */
+function dbTimeToIso(s: string | null | undefined): string | null {
+  return s ? new Date(`${s.replace(" ", "T")}Z`).toISOString() : null;
+}
+
+/**
+ * PURE. Reconcile the in-process sync state with the latest sync_runs row so the
+ * "Last sync" indicator reflects syncs that ran in another context (e.g. the
+ * server-side scheduler / a different dev worker). In-memory wins while a local
+ * sync is live (it has live progress); otherwise the DB fills in a newer finish
+ * or a recent background run.
+ */
+export function mergeSyncState(
+  inMem: SyncState,
+  row: SyncRunRow | null | undefined,
+  now: number,
+): SyncState {
+  if (!row || inMem.running) return inMem;
+
+  // A background sync currently in progress (started recently, not yet finished).
+  if (row.status === "running" && !row.finished_at) {
+    const startedAt = dbTimeToIso(row.started_at);
+    const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+    if (Number.isFinite(startedMs) && now - startedMs < RUNNING_STALE_MS) {
+      return {
+        ...inMem,
+        running: true,
+        startedAt,
+        phase: "jira",
+        message: "Syncing in background…",
+        error: null,
+      };
+    }
+    return inMem; // stale running row — ignore
+  }
+
+  // A completed run more recent than what we have in memory.
+  const dbFinishedAt = dbTimeToIso(row.finished_at);
+  if (dbFinishedAt && (!inMem.finishedAt || dbFinishedAt > inMem.finishedAt)) {
+    const isError = row.status === "error";
+    return {
+      ...inMem,
+      finishedAt: dbFinishedAt,
+      phase: isError ? "error" : "done",
+      message: isError ? row.error ?? "Error" : "Done",
+      error: isError ? row.error ?? "error" : null,
+      issuesPulled: row.issues_pulled ?? inMem.issuesPulled,
+      issuesAnalyzed: row.issues_analyzed ?? inMem.issuesAnalyzed,
+    };
+  }
+  return inMem;
+}

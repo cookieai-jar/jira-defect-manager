@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { getSyncState } from "@/lib/sync-state";
+import { getSyncState, mergeSyncState, type SyncRunRow } from "@/lib/sync-state";
 import { triggerSync } from "@/lib/sync-runner";
+import { latestSyncRun } from "@/lib/db";
 import { isScope, type Scope } from "@/types/triage";
 
 function scopeFromReq(req: Request): Scope | null {
@@ -13,7 +14,13 @@ export async function GET(req: Request) {
   const scope = scopeFromReq(req);
   if (!scope)
     return NextResponse.json({ error: "scope must be 'eac', 'fr', or 'sec'" }, { status: 400 });
-  return NextResponse.json(getSyncState(scope));
+  // Merge the DB's latest run so the indicator reflects scheduler/background syncs.
+  const merged = mergeSyncState(
+    getSyncState(scope),
+    latestSyncRun(scope) as SyncRunRow | null,
+    Date.now(),
+  );
+  return NextResponse.json(merged);
 }
 
 export async function POST(req: Request) {

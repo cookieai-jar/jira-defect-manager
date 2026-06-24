@@ -11,63 +11,73 @@ interface Props {
   scope: Scope;
   onSynced?: () => void;
   /**
-   * When set, the dashboard auto-triggers a full sync + re-analysis on this
-   * interval (ms) for as long as it stays open. Background runs are silent
-   * (no failure alert) and are skipped while a sync is already in flight.
+   * When set, the button keeps a steady idle poll so the "Last sync" indicator
+   * reflects server-scheduler/background syncs and the dashboard refetches when
+   * one completes. The actual hourly triggering is done server-side (see
+   * src/lib/scheduler.ts); this is only the view-refresh cadence.
    */
   autoRefreshMs?: number;
 }
 
 export function SyncButton({ scope, onSynced, autoRefreshMs }: Props) {
   const [state, setState] = useState<SyncState | null>(null);
-  const [polling, setPolling] = useState(false);
 
+  // Refs let the single polling loop see fresh values without re-subscribing.
+  const onSyncedRef = useRef(onSynced);
+  onSyncedRef.current = onSynced;
+  const lastFinishedRef = useRef<string | null | undefined>(undefined);
+  const kickRef = useRef<() => void>(() => {});
+
+  // Steady poll: fast (1.2s) while a sync is running, slow (idle cadence) when
+  // not — so the indicator reflects server-scheduler/background syncs, and the
+  // dashboard refetches when one completes. Triggering is the server's job now.
   useEffect(() => {
     let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idleMs = autoRefreshMs ? 60_000 : null;
+
     async function tick() {
+      clearTimeout(timer);
       try {
         const s = (await fetch(`/api/sync?scope=${scope}`).then((r) => r.json())) as SyncState;
-        if (!stop) setState(s);
-        if (s.running) {
-          setTimeout(tick, 1200);
-        } else if (polling) {
-          setPolling(false);
-          onSynced?.();
+        if (stop) return;
+        setState(s);
+        if (!s.running) {
+          // Refetch the report whenever a sync completes (local OR background).
+          const prev = lastFinishedRef.current;
+          if (prev === undefined) {
+            lastFinishedRef.current = s.finishedAt ?? null; // first observation, no refetch
+          } else if (s.finishedAt && s.finishedAt !== prev) {
+            lastFinishedRef.current = s.finishedAt;
+            onSyncedRef.current?.();
+          }
         }
+        const delay = s.running ? 1200 : idleMs;
+        if (delay != null) timer = setTimeout(tick, delay);
       } catch {
-        if (!stop) setTimeout(tick, 2000);
+        if (!stop) timer = setTimeout(tick, 2000);
       }
     }
-    tick();
+
+    kickRef.current = () => {
+      clearTimeout(timer);
+      void tick();
+    };
+    void tick();
     return () => {
       stop = true;
+      clearTimeout(timer);
     };
-  }, [polling, onSynced, scope]);
+  }, [scope, autoRefreshMs]);
 
-  async function start(silent = false) {
-    setPolling(true);
+  async function start() {
     const res = await fetch(`/api/sync?scope=${scope}`, { method: "POST" });
     if (!res.ok && res.status !== 202) {
       const err = await res.json().catch(() => ({}));
-      if (!silent) alert(`Sync failed: ${err.error ?? res.statusText}`);
-      setPolling(false);
+      alert(`Sync failed: ${err.error ?? res.statusText}`);
     }
+    kickRef.current(); // poll immediately so the spinner/progress show right away
   }
-
-  // Hourly (or configured) auto-sync. A stable interval reads the latest
-  // `start`/busy state through refs so the timer never resets on re-render.
-  const startRef = useRef(start);
-  startRef.current = start;
-  const busyRef = useRef(false);
-  busyRef.current = polling || (state?.running ?? false);
-
-  useEffect(() => {
-    if (!autoRefreshMs) return;
-    const id = setInterval(() => {
-      if (!busyRef.current) startRef.current(true);
-    }, autoRefreshMs);
-    return () => clearInterval(id);
-  }, [autoRefreshMs]);
 
   const running = state?.running ?? false;
   const pct = state?.total ? Math.round((state.done / state.total) * 100) : 0;
