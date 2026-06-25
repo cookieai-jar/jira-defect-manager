@@ -69,6 +69,11 @@ export function errorSamplesQuery(tenant: string): string {
   return `${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` | json`;
 }
 
+/** LogQL: recent extraction-error log lines for one integration (datasource_type), for RCA sampling. */
+export function errorSamplesByTypeQuery(tenant: string, datasourceType: string): string {
+  return `${errorSamplesQuery(tenant)} | datasource_type=\`${datasourceType}\``;
+}
+
 const FEATURE_FLAG_LINE = "Dynamic feature flags updated";
 const DATA_PLANE_INFO_LINE = "Data plane info";
 

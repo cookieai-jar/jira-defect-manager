@@ -188,6 +188,40 @@ export interface ErrorReason {
   logsUrl?: string | null;
 }
 
+/** One integration's failure signals, sent to the RCA analyzer. */
+export interface IntegrationErrorSignals {
+  integration: string;
+  state: IntegrationState;
+  severity: Severity;
+  failing: number;
+  extractionErrors: number;
+  freshnessSec: number | null;
+  lagSec: number | null;
+  topReasons: ErrorReason[];
+  topErrors: ErrorSignature[];
+}
+
+/** Claude's root-cause analysis for one failing integration. */
+export interface ErrorRcaResult {
+  integration: string;
+  /** One-line summary of what's broken. */
+  headline: string;
+  /** Who must act: customer (user), Veza (product), or indeterminate. */
+  ownership: "user" | "product" | "unknown";
+  /** The most probable underlying cause, reasoned from the evidence. */
+  rootCause: string;
+  /** Short cited signals (reason codes, log/stacktrace fragments) backing the root cause. */
+  evidence: string[];
+  /** Ordered, concrete remediation steps. */
+  fix: string[];
+  confidence: "high" | "medium" | "low";
+  /** Number of distinct error log samples that informed the analysis. */
+  sampleCount: number;
+  generatedAt: string;
+  /** Present when analysis failed — a degraded placeholder result. */
+  error?: string;
+}
+
 /** A graph node/edge type with its count. */
 export interface GraphTypeCount {
   type: string;

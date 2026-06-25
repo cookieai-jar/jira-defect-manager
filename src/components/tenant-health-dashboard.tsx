@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, HealthBadge } from "@/components/ui/badge";
@@ -23,13 +23,17 @@ import {
   RefreshCw,
   ScrollText,
   Server,
+  Sparkles,
+  Stethoscope,
   Ticket,
   TriangleAlert,
 } from "lucide-react";
 import type {
   ErrorReason,
+  ErrorRcaResult,
   ErrorTimelinePoint,
   GraphWrite,
+  IntegrationErrorSignals,
   IntegrationHealth,
   IntegrationState,
   Severity,
@@ -119,10 +123,120 @@ const SOURCE_LABELS: Record<keyof TenantHealthReport["sources"], string> = {
   loki: "Loki",
 };
 
+/** Integrations worth a root-cause analysis — anything that isn't clean. */
+function isAnalyzable(it: IntegrationHealth): boolean {
+  return (
+    it.state === "failing" ||
+    it.state === "stalled" ||
+    it.failing > 0 ||
+    it.extractionErrors > 0 ||
+    it.severity !== "ok"
+  );
+}
+
+function toSignals(it: IntegrationHealth): IntegrationErrorSignals {
+  return {
+    integration: it.integration,
+    state: it.state,
+    severity: it.severity,
+    failing: it.failing,
+    extractionErrors: it.extractionErrors,
+    freshnessSec: it.freshnessSec,
+    lagSec: it.lagSec,
+    topReasons: it.topReasons,
+    topErrors: it.topErrors,
+  };
+}
+
 export function TenantHealthDashboard({ tenant }: { tenant: string }) {
   const [report, setReport] = useState<TenantHealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Deep error analysis (RCA) state — keyed by integration name.
+  const [rca, setRca] = useState<Map<string, ErrorRcaResult>>(new Map());
+  const [rcaLoading, setRcaLoading] = useState<Set<string>>(new Set());
+  const [rcaProgress, setRcaProgress] = useState<{ done: number; total: number } | null>(null);
+  const analyzingAllRef = useRef(false);
+
+  const analyzeOne = useCallback(
+    async (it: IntegrationHealth): Promise<void> => {
+      setRcaLoading((s) => new Set(s).add(it.integration));
+      try {
+        const data = (await fetch("/api/tenant/error-analysis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tenant, signals: toSignals(it) }),
+        }).then((r) => r.json())) as { result: ErrorRcaResult | null; error?: string };
+        const result: ErrorRcaResult =
+          data.result ??
+          {
+            integration: it.integration,
+            headline: "Analysis failed",
+            ownership: "unknown",
+            rootCause: data.error ?? "The analyzer returned no result.",
+            evidence: [],
+            fix: [],
+            confidence: "low",
+            sampleCount: 0,
+            generatedAt: new Date().toISOString(),
+            error: data.error ?? "no result",
+          };
+        setRca((m) => new Map(m).set(it.integration, result));
+      } catch (e) {
+        setRca((m) =>
+          new Map(m).set(it.integration, {
+            integration: it.integration,
+            headline: "Analysis failed",
+            ownership: "unknown",
+            rootCause: e instanceof Error ? e.message : "Request failed.",
+            evidence: [],
+            fix: [],
+            confidence: "low",
+            sampleCount: 0,
+            generatedAt: new Date().toISOString(),
+            error: "request failed",
+          }),
+        );
+      } finally {
+        setRcaLoading((s) => {
+          const next = new Set(s);
+          next.delete(it.integration);
+          return next;
+        });
+      }
+    },
+    [tenant],
+  );
+
+  const analyzeAll = useCallback(async () => {
+    if (analyzingAllRef.current) return; // ignore re-entry while a run is in flight
+    const targets = (report?.integrations ?? []).filter(isAnalyzable);
+    if (targets.length === 0) return;
+    if (targets.length > 15 && !window.confirm(`Run deep analysis on ${targets.length} integrations? That's ${targets.length} Claude calls.`)) {
+      return;
+    }
+    analyzingAllRef.current = true;
+    setRcaProgress({ done: 0, total: targets.length });
+    // Bounded concurrency (3 in flight) so results stream in without hammering the API.
+    let next = 0;
+    let done = 0;
+    const PARALLEL = 3;
+    const worker = async () => {
+      while (next < targets.length) {
+        const it = targets[next++];
+        await analyzeOne(it);
+        done++;
+        setRcaProgress({ done, total: targets.length });
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(PARALLEL, targets.length) }, worker));
+    } finally {
+      setRcaProgress(null);
+      analyzingAllRef.current = false;
+    }
+  }, [report, analyzeOne]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -358,13 +472,39 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
 
           {/* 5. Integrations table */}
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Boxes className="h-4 w-4 text-accent" /> Integrations
-              </CardTitle>
-              <span className="text-[11px] text-fg-subtle">
-                {sortedIntegrations.length} · by severity · last {report.windowHours}h
-              </span>
+            <CardHeader className="flex flex-row items-center justify-between gap-2">
+              <div className="flex items-baseline gap-2">
+                <CardTitle className="flex items-center gap-2">
+                  <Boxes className="h-4 w-4 text-accent" /> Integrations
+                </CardTitle>
+                <span className="text-[11px] text-fg-subtle">
+                  {sortedIntegrations.length} · by severity · last {report.windowHours}h
+                </span>
+              </div>
+              {(() => {
+                const targets = sortedIntegrations.filter(isAnalyzable);
+                const running = rcaProgress !== null;
+                if (targets.length === 0) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={analyzeAll}
+                    disabled={running}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-medium transition-colors",
+                      running
+                        ? "border-border bg-bg-muted text-fg-subtle cursor-wait"
+                        : "border-accent/40 bg-accent/10 text-accent hover:bg-accent/20",
+                    )}
+                    title="Run deep root-cause analysis on every failing integration"
+                  >
+                    <Sparkles className={cn("h-3.5 w-3.5", running && "animate-pulse")} />
+                    {running
+                      ? `Analyzing ${rcaProgress!.done}/${rcaProgress!.total}…`
+                      : `Analyze failing (${targets.length})`}
+                  </button>
+                );
+              })()}
             </CardHeader>
             <CardBody className="px-0 py-0">
               {sortedIntegrations.length === 0 ? (
@@ -393,7 +533,15 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                     </thead>
                     <tbody>
                       {sortedIntegrations.map((it) => (
-                        <IntegrationRow key={it.integration} it={it} />
+                        <IntegrationRow
+                          key={it.integration}
+                          it={it}
+                          canAnalyze={isAnalyzable(it)}
+                          analyzing={rcaLoading.has(it.integration)}
+                          analyzed={rca.has(it.integration)}
+                          disabled={rcaProgress !== null}
+                          onAnalyze={() => analyzeOne(it)}
+                        />
                       ))}
                     </tbody>
                   </table>
@@ -401,6 +549,19 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               )}
             </CardBody>
           </Card>
+
+          {/* 5a-ii. Root-cause analysis results */}
+          {rca.size > 0 && (
+            <RcaResultsCard
+              results={sortedIntegrations
+                .map((it) => rca.get(it.integration))
+                .filter((r): r is ErrorRcaResult => Boolean(r))}
+              onDismiss={() => {
+                setRca(new Map());
+                setRcaProgress(null);
+              }}
+            />
+          )}
 
           {/* 5b. Extraction errors over time */}
           <Card>
@@ -593,7 +754,21 @@ function LiveActivityGroup({
   );
 }
 
-function IntegrationRow({ it }: { it: IntegrationHealth }) {
+function IntegrationRow({
+  it,
+  canAnalyze,
+  analyzing,
+  analyzed,
+  disabled,
+  onAnalyze,
+}: {
+  it: IntegrationHealth;
+  canAnalyze: boolean;
+  analyzing: boolean;
+  analyzed: boolean;
+  disabled: boolean;
+  onAnalyze: () => void;
+}) {
   const topReasons = (it.topReasons ?? []).slice(0, 2);
   const topErrors = it.topErrors.slice(0, 2);
   return (
@@ -745,6 +920,29 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
       </td>
       <td className="px-2 py-1.5 text-right">
         <div className="inline-flex items-center gap-2">
+          {canAnalyze && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAnalyze();
+              }}
+              disabled={analyzing || disabled}
+              className={cn(
+                "inline-flex transition-colors",
+                analyzing
+                  ? "text-accent cursor-wait"
+                  : disabled
+                    ? "text-fg-subtle/40 cursor-not-allowed"
+                    : analyzed
+                      ? "text-accent hover:text-accent-hover"
+                      : "text-fg-subtle hover:text-accent",
+              )}
+              title={analyzed ? `Re-run RCA for ${it.integration}` : `Deep error analysis (RCA) for ${it.integration}`}
+            >
+              <Stethoscope className={cn("h-3.5 w-3.5", analyzing && "animate-pulse")} />
+            </button>
+          )}
           {it.logsUrl && (it.extractionErrors > 0 || it.failing > 0) && (
             <a
               href={it.logsUrl}
@@ -909,6 +1107,107 @@ function TopErrorReasonsCard({ reasons, errorLogsUrl }: { reasons: ErrorReason[]
             </table>
           </div>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function ownershipBadgeClass(o: ErrorRcaResult["ownership"]): string {
+  if (o === "product") return "border-danger/40 bg-danger/10 text-danger";
+  if (o === "user") return "border-warning/40 bg-warning/10 text-warning";
+  return "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted";
+}
+
+function ownershipLabel(o: ErrorRcaResult["ownership"]): string {
+  if (o === "product") return "product — Veza fixes";
+  if (o === "user") return "user — customer fixes";
+  return "unknown — needs triage";
+}
+
+function confidenceClass(c: ErrorRcaResult["confidence"]): string {
+  if (c === "high") return "text-success";
+  if (c === "medium") return "text-warning";
+  return "text-fg-subtle";
+}
+
+function RcaResultItem({ r }: { r: ErrorRcaResult }) {
+  return (
+    <div
+      className={cn(
+        "rounded border px-4 py-3",
+        r.error ? "border-danger/40 bg-danger/5" : "border-border bg-bg-muted/20",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono font-semibold text-fg">{r.integration}</span>
+        <Badge className={cn("border", ownershipBadgeClass(r.ownership))}>{ownershipLabel(r.ownership)}</Badge>
+        <span className={cn("text-[11px] font-medium", confidenceClass(r.confidence))}>
+          {r.confidence} confidence
+        </span>
+        <span className="ml-auto text-[10px] text-fg-subtle">
+          {r.sampleCount} log sample{r.sampleCount === 1 ? "" : "s"}
+        </span>
+      </div>
+      <p className="mt-2 text-sm font-medium text-fg">{r.headline}</p>
+      <p className="mt-1 text-sm text-fg-muted">{r.rootCause}</p>
+      {r.evidence.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[10px] uppercase tracking-wide text-fg-subtle">Evidence</div>
+          <ul className="mt-0.5 space-y-0.5">
+            {r.evidence.map((e, i) => (
+              <li key={i} className="font-mono text-[11px] text-fg-muted break-words">
+                · {e}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {r.fix.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[10px] uppercase tracking-wide text-fg-subtle">Suggested fix</div>
+          <ol className="mt-0.5 list-decimal pl-5 space-y-0.5">
+            {r.fix.map((f, i) => (
+              <li key={i} className="text-sm text-fg">
+                {f}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RcaResultsCard({
+  results,
+  onDismiss,
+}: {
+  results: ErrorRcaResult[];
+  onDismiss: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-accent" /> Root-cause analysis
+          </CardTitle>
+          <span className="text-[11px] text-fg-subtle">
+            AI-generated from error logs + metrics — verify before acting
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-[11px] text-fg-subtle hover:text-accent transition-colors"
+        >
+          Clear
+        </button>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        {results.map((r) => (
+          <RcaResultItem key={r.integration} r={r} />
+        ))}
       </CardBody>
     </Card>
   );
