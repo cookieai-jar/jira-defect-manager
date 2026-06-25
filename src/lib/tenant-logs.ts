@@ -89,7 +89,8 @@ export function dataPlaneInfoQuery(tenant: string): string {
 
 /** PURE. Extract a cloud region from a Loki datasource name, e.g. "...-eu-west-2" -> "eu-west-2". */
 export function regionFromDatasourceName(name: string | undefined): string | null {
-  const m = /((?:af|ap|ca|eu|me|sa|us)-[a-z]+-\d+)\b/i.exec(name ?? "");
+  // Left boundary (?<![a-z]) prevents matching "us-east-1" inside e.g. "census-east-1".
+  const m = /(?<![a-z])((?:af|ap|ca|eu|me|sa|us)-[a-z]+-\d+)\b/i.exec(name ?? "");
   return m ? m[1].toLowerCase() : null;
 }
 
@@ -127,16 +128,30 @@ export function parseFeatureFlagLines(lines: string[]): TenantFeatureFlags {
   return { current: changes[0]?.flags ?? [], changes };
 }
 
-/** PURE. Latest data-plane version + edp_id from "Data plane info" lines (newest-first input). */
+/**
+ * PURE. Latest data-plane version + edp_id from "Data plane info" lines. Input is
+ * un-ordered (Loki flattens per-pod streams), so pick the line with the highest
+ * `ts` (sub-second float); fall back to the first parseable line if none carry ts.
+ * This avoids reporting a stale pod's version during a rolling upgrade.
+ */
 export function parseDataPlaneInfo(lines: string[]): { insightPointVersion: string | null; edpId: string | null } {
+  let best: { ms: number; version: string | null; edpId: string | null } | null = null;
+  let fallback: { version: string | null; edpId: string | null } | null = null;
   for (const raw of lines) {
+    let j: { ts?: number; current_version?: string; edp_id?: string };
     try {
-      const j = JSON.parse(raw) as { current_version?: string; edp_id?: string };
-      return { insightPointVersion: j.current_version ?? null, edpId: j.edp_id ?? null };
+      j = JSON.parse(raw);
     } catch {
       continue;
     }
+    const entry = { version: j.current_version ?? null, edpId: j.edp_id ?? null };
+    if (fallback === null) fallback = entry;
+    if (typeof j.ts === "number" && (best === null || j.ts > best.ms)) {
+      best = { ms: j.ts, ...entry };
+    }
   }
+  if (best) return { insightPointVersion: best.version, edpId: best.edpId };
+  if (fallback) return { insightPointVersion: fallback.version, edpId: fallback.edpId };
   return { insightPointVersion: null, edpId: null };
 }
 

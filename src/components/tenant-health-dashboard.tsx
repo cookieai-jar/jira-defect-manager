@@ -741,7 +741,7 @@ function FeatureFlagsCard({ featureFlags }: { featureFlags: TenantFeatureFlags |
           <div className="space-y-1.5 border-t border-border pt-3">
             <div className="text-[11px] uppercase tracking-wide text-fg-subtle">Change history</div>
             {changes.map((c, i) => (
-              <div key={i} className="flex items-start gap-2 text-[11px]">
+              <div key={`${c.t}-${i}`} className="flex items-start gap-2 text-[11px]">
                 <span className="inline-flex items-center gap-1 shrink-0 font-mono text-fg-muted">
                   <Clock className="h-3 w-3" />
                   {new Date(c.t).toLocaleString()}

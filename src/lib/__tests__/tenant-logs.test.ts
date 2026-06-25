@@ -121,6 +121,9 @@ describe("regionFromDatasourceName", () => {
     expect(regionFromDatasourceName("grafanacloud-logs")).toBeNull();
     expect(regionFromDatasourceName(undefined)).toBeNull();
   });
+  it("does not match a region token embedded mid-word", () => {
+    expect(regionFromDatasourceName("grafanacloud-census-east-1-logs")).toBeNull(); // not "us-east-1"
+  });
 });
 
 describe("parseFeatureFlagLines", () => {
@@ -157,6 +160,16 @@ describe("parseFeatureFlagLines", () => {
     // collapses the two identical [A,B] emissions; transitions: [A,B] then [A]
     expect(ff.changes.map((c) => c.flags)).toEqual([["NRR_A", "NRR_B"], ["NRR_A"]]);
   });
+  it("keeps non-adjacent equal sets as distinct transitions (A -> B -> A)", () => {
+    const lines = [
+      JSON.stringify({ ts: 3, flags: "NRR_A" }),
+      JSON.stringify({ ts: 2, flags: "NRR_B" }),
+      JSON.stringify({ ts: 1, flags: "NRR_A" }),
+    ];
+    const ff = parseFeatureFlagLines(lines);
+    expect(ff.current).toEqual(["NRR_A"]);
+    expect(ff.changes.map((c) => c.flags)).toEqual([["NRR_A"], ["NRR_B"], ["NRR_A"]]);
+  });
 });
 
 describe("parseDataPlaneInfo", () => {
@@ -167,6 +180,14 @@ describe("parseDataPlaneInfo", () => {
   it("nulls missing fields and empty input", () => {
     expect(parseDataPlaneInfo([JSON.stringify({})])).toEqual({ insightPointVersion: null, edpId: null });
     expect(parseDataPlaneInfo([])).toEqual({ insightPointVersion: null, edpId: null });
+  });
+  it("returns the NEWEST version by ts, not array order (rolling upgrade)", () => {
+    // un-ordered input (old pod listed first); must pick the newer version
+    const lines = [
+      JSON.stringify({ ts: 100, current_version: "2026.6.20", edp_id: "e1" }),
+      JSON.stringify({ ts: 200, current_version: "2026.6.22", edp_id: "e1" }),
+    ];
+    expect(parseDataPlaneInfo(lines)).toEqual({ insightPointVersion: "2026.6.22", edpId: "e1" });
   });
 });
 

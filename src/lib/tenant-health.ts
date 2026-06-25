@@ -378,8 +378,12 @@ export async function buildTenantReport(
     parsingNowTypes = new Set(
       parsingNow.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),
     );
-    cluster = uptime[0]?.metric.cluster ?? uptime[0]?.metric.k8s_cluster_name ?? null;
-    namespace = uptime[0]?.metric.namespace ?? null;
+    // uptime returns one series per parser pod; pick the longest-running (live)
+    // one's cluster rather than an arbitrary [0] (avoids a stale cross-cluster
+    // series after a migration). namespace is deterministic for the control plane.
+    const liveUptime = [...uptime].sort((a, b) => b.value - a.value)[0];
+    cluster = liveUptime?.metric.cluster ?? liveUptime?.metric.k8s_cluster_name ?? null;
+    namespace = `${tenant}-cp`;
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn(`[tenant-health] metrics query failed for ${tenant}:`, e instanceof Error ? e.message : e);
