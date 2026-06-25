@@ -248,8 +248,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
           {/* 2. Health header strip */}
           <Card>
             <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
-              <div className="flex items-center gap-3 shrink-0">
+              <div
+                className="flex items-center gap-3 shrink-0"
+                title="Health score (higher = healthier): 100 × (1 − share of integrations failing/degraded), minus a capped penalty for firing infra alerts."
+              >
                 <div>
+                  <div className="text-[11px] uppercase tracking-wide text-fg-subtle">Health score</div>
                   <div className="flex items-baseline gap-1">
                     <span
                       className={cn(

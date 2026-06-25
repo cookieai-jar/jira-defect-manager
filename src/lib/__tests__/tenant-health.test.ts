@@ -60,15 +60,35 @@ describe("computeHealthScore", () => {
       { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
       { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
-    // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
+    // 1 of 2 integrations failing (weight 1) -> integrationScore 50; infra alerts
+    // 1 crit + 1 warn -> penalty 21; 50 - 21 = 29.
     expect(
       computeHealthScore(integrations, [alert({ severity: "critical" }), alert({ severity: "warning" })]),
-    ).toBe(71);
+    ).toBe(29);
   });
-  it("ignores resolved alerts and clamps to 0", () => {
+  it("caps the alert-only penalty (healthy integrations can't be zeroed by alerts) and ignores resolved", () => {
     const many = Array.from({ length: 10 }, () => alert({ severity: "critical" }));
-    expect(computeHealthScore([], many)).toBe(0);
+    // no integrations -> integrationScore 100; alert penalty capped at 50 -> 50 (not 0).
+    expect(computeHealthScore([], many)).toBe(50);
     expect(computeHealthScore([], [alert({ severity: "critical", state: "resolved" })])).toBe(100);
+  });
+  it("reaches 0 only when integrations are fully failing", () => {
+    const failing = [
+      { integration: "s3", providers: 1, extractionErrors: 9, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 3, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "critical" as Severity },
+    ];
+    expect(computeHealthScore(failing, [])).toBe(0); // 1/1 failing -> 0
+  });
+  it("penalizes only infra alerts; integration-attached alerts are excluded (already in integration weight)", () => {
+    const healthy = [
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+    ];
+    // integration critical alert is ignored; only the infra warning penalizes -> 100 - 6 = 94
+    expect(
+      computeHealthScore(healthy, [
+        alert({ integration: "okta", severity: "critical" }),
+        alert({ integration: null, severity: "warning" }),
+      ]),
+    ).toBe(94);
   });
 });
 
@@ -250,10 +270,24 @@ describe("aggregateErrorReasons", () => {
 import { buildFleetSummaries, scoreFromSignals } from "@/lib/tenant-health";
 
 describe("scoreFromSignals", () => {
-  it("deducts 15/critical, 6/warning, 8/errored-integration, clamped", () => {
-    expect(scoreFromSignals(0, 0, 0)).toBe(100);
-    expect(scoreFromSignals(1, 1, 1)).toBe(71);
-    expect(scoreFromSignals(10, 0, 0)).toBe(0); // clamp
+  it("is proportional to the fraction of unhealthy integrations", () => {
+    expect(scoreFromSignals(0, 10, 0, 0)).toBe(100); // all healthy
+    expect(scoreFromSignals(5, 10, 0, 0)).toBe(50); // half failing
+    expect(scoreFromSignals(2.5, 10, 0, 0)).toBe(75); // quarter (degraded weight)
+    expect(scoreFromSignals(10, 10, 0, 0)).toBe(0); // all failing
+  });
+  it("applies a capped alert penalty (15/critical, 6/warning, cap 50)", () => {
+    expect(scoreFromSignals(0, 10, 1, 1)).toBe(79); // 100 - 21
+    expect(scoreFromSignals(0, 10, 5, 0)).toBe(50); // 75 penalty capped to 50
+    expect(scoreFromSignals(5, 10, 1, 0)).toBe(35); // 50 - 15
+  });
+  it("treats a tenant with no integrations as 100 minus alert penalty", () => {
+    expect(scoreFromSignals(0, 0, 0, 0)).toBe(100);
+    expect(scoreFromSignals(0, 0, 1, 0)).toBe(85);
+  });
+  it("clamps to [0,100]", () => {
+    expect(scoreFromSignals(10, 10, 5, 5)).toBe(0);
+    expect(scoreFromSignals(99, 10, 0, 0)).toBe(0); // weight clamped to fraction 1
   });
 });
 
@@ -264,7 +298,8 @@ describe("buildFleetSummaries", () => {
       { tenant: "bcgprod", agent: "s3", value: 50 },
       { tenant: "healthyco", agent: "aws", value: 10 },
     ],
-    errorsByTenant: new Map([["bcgprod", 0]]),
+    errorRows: [{ tenant: "bcgprod", agent: "s3", value: 0 }],
+    failingRows: [{ tenant: "bcgprod", agent: "s3", value: 0 }],
     alertsByTenant: new Map<string, TenantAlert[]>([
       [
         "bcgprod",
@@ -308,5 +343,33 @@ describe("buildFleetSummaries", () => {
     const h = rows.find((r) => r.tenant === "healthyco")!;
     expect(h.healthScore).toBe(100);
     expect(h.topIssue).toBeNull();
+  });
+
+  it("scores on failing-datasource gauge (an agent counts once), shows error volume separately", () => {
+    const rows = buildFleetSummaries(
+      {
+        extractionRows: [
+          { tenant: "acme", agent: "okta", value: 100 },
+          { tenant: "acme", agent: "s3", value: 100 },
+          { tenant: "acme", agent: "ad", value: 100 },
+          { tenant: "acme", agent: "gcp", value: 100 },
+        ],
+        errorRows: [
+          { tenant: "acme", agent: "okta", value: 5 },
+          { tenant: "acme", agent: "okta", value: 50 },
+          { tenant: "acme", agent: "s3", value: 1 },
+        ],
+        failingRows: [
+          { tenant: "acme", agent: "okta", value: 3 },
+          { tenant: "acme", agent: "s3", value: 2 }, // 2 of 4 integrations failing
+        ],
+        alertsByTenant: new Map(),
+      },
+      makeNameResolver([]),
+    );
+    const a = rows.find((r) => r.tenant === "acme")!;
+    expect(a.integrations).toBe(4);
+    expect(a.extractionErrors).toBe(56); // 5 + 50 + 1 (display volume, from errorRows)
+    expect(a.healthScore).toBe(50); // 2 of 4 failing (gauge), no alerts -> 100*(1-0.5)
   });
 });

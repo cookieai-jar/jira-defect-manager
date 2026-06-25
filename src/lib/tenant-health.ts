@@ -142,29 +142,59 @@ export function classifyErrors(alerts: TenantAlert[]): { known: number; unknown:
   return { known, unknown };
 }
 
+/** Alerts alone can't drop a tenant whose integrations are all healthy below this. */
+const ALERT_PENALTY_CAP = 50;
+
 /**
- * PURE. Composite 0-100 health primitive. Start at 100, deduct for firing alerts
- * (critical heavier than warning) and integrations with extraction errors.
- * Clamped to [0, 100]. Higher = healthier. Shared by the tenant detail and fleet.
+ * PURE. Composite 0-100 health score (higher = healthier). Proportional, so it
+ * scales with tenant size and doesn't saturate the way the old fixed
+ * -8/errored-integration penalty did (any tenant with ~13+ bad integrations hit 0):
+ *
+ *   integrationScore = 100 × (1 − unhealthyWeight / totalIntegrations)
+ *   score            = integrationScore − min(CAP, 15·critical + 6·warning)
+ *
+ * `unhealthyWeight` is the summed severity of bad integrations (broken = 1,
+ * degraded = 0.5), so half the fleet failing reads as ~50, not 0. The alert
+ * penalty is capped so infra alerts can't zero an otherwise-healthy tenant.
+ * Clamped to [0, 100]. Shared by the tenant detail and fleet.
  */
 export function scoreFromSignals(
+  unhealthyWeight: number,
+  totalIntegrations: number,
   criticalAlerts: number,
   warningAlerts: number,
-  erroredIntegrations: number,
 ): number {
-  const score = 100 - 15 * criticalAlerts - 6 * warningAlerts - 8 * erroredIntegrations;
-  return Math.max(0, Math.min(100, Math.round(score)));
+  const frac = totalIntegrations > 0 ? Math.min(1, unhealthyWeight / totalIntegrations) : 0;
+  const integrationScore = 100 * (1 - frac);
+  const alertPenalty = Math.min(ALERT_PENALTY_CAP, 15 * criticalAlerts + 6 * warningAlerts);
+  return Math.max(0, Math.min(100, Math.round(integrationScore - alertPenalty)));
+}
+
+/**
+ * PURE. How unhealthy one integration is: 1 = broken (failing / critical),
+ * 0.5 = degraded (stalled / warning), 0 = healthy or idle. Folds extraction
+ * state and alert severity into a single weight for the proportional score.
+ */
+export function integrationHealthWeight(i: IntegrationHealth): number {
+  if (i.severity === "critical" || i.state === "failing") return 1;
+  if (i.severity === "warning" || i.state === "stalled") return 0.5;
+  return 0;
 }
 
 export function computeHealthScore(
   integrations: IntegrationHealth[],
   alerts: TenantAlert[],
 ): number {
-  const firing = alerts.filter((a) => a.state === "firing");
+  // Integration-attached alerts already flow into each integration's weight via
+  // its severity, so only infra (non-integration) alerts feed the alert penalty —
+  // avoids double-counting the same failure.
+  const infraFiring = alerts.filter((a) => a.state === "firing" && !a.integration);
+  const unhealthyWeight = integrations.reduce((sum, i) => sum + integrationHealthWeight(i), 0);
   return scoreFromSignals(
-    firing.filter((a) => a.severity === "critical").length,
-    firing.filter((a) => a.severity === "warning").length,
-    integrations.filter((i) => i.extractionErrors > 0).length,
+    unhealthyWeight,
+    integrations.length,
+    infraFiring.filter((a) => a.severity === "critical").length,
+    infraFiring.filter((a) => a.severity === "warning").length,
   );
 }
 
@@ -183,8 +213,14 @@ function alertIssueLine(a: TenantAlert): string {
 interface FleetInputs {
   /** Per (tenant, agent_type) extraction volume over the window. */
   extractionRows: Array<{ tenant: string; agent: string; value: number }>;
-  /** Per-tenant extraction error totals. */
-  errorsByTenant: Map<string, number>;
+  /** Per (tenant, agent_type) extraction error volume — shown as the "Errors" total. */
+  errorRows: Array<{ tenant: string; agent: string; value: number }>;
+  /**
+   * Per (tenant, agent_type) currently-failing datasources, from the authoritative
+   * `cookie_platform_scheduling_error_reasons` gauge — the SAME signal the detail
+   * page weights, so fleet & detail rank tenants consistently. Drives the score.
+   */
+  failingRows: Array<{ tenant: string; agent: string; value: number }>;
   /** Per-tenant alerts. */
   alertsByTenant: Map<string, TenantAlert[]>;
 }
@@ -207,9 +243,25 @@ export function buildFleetSummaries(
     integrationsByTenant.set(r.tenant, set);
   }
 
+  // Per-tenant error volume total (display only).
+  const errorsByTenant = new Map<string, number>();
+  for (const r of inputs.errorRows) {
+    errorsByTenant.set(r.tenant, (errorsByTenant.get(r.tenant) ?? 0) + r.value);
+  }
+  // Set of failing integrations per tenant (authoritative gauge) — drives the score.
+  const failingAgentsByTenant = new Map<string, Set<string>>();
+  for (const r of inputs.failingRows) {
+    if (r.value > 0) {
+      const set = failingAgentsByTenant.get(r.tenant) ?? new Set<string>();
+      set.add(r.agent);
+      failingAgentsByTenant.set(r.tenant, set);
+    }
+  }
+
   const tenants = new Set<string>([
     ...extractionsByTenant.keys(),
-    ...inputs.errorsByTenant.keys(),
+    ...errorsByTenant.keys(),
+    ...failingAgentsByTenant.keys(),
     ...inputs.alertsByTenant.keys(),
   ]);
 
@@ -219,7 +271,28 @@ export function buildFleetSummaries(
     const firing = alerts.filter((a) => a.state === "firing");
     const criticalAlerts = firing.filter((a) => a.severity === "critical").length;
     const warningAlerts = firing.filter((a) => a.severity === "warning").length;
-    const extractionErrors = Math.round(inputs.errorsByTenant.get(tenant) ?? 0);
+    const extractionErrors = Math.round(errorsByTenant.get(tenant) ?? 0);
+    const failingAgents = failingAgentsByTenant.get(tenant) ?? new Set<string>();
+
+    // Mirror the detail page's model: fold integration-attached alerts into the
+    // integration universe + weight (worst severity per agent wins), and reserve
+    // infra (non-integration) alerts for the capped penalty. Keeps detail & fleet
+    // scores consistent for the same tenant.
+    const universe = new Set<string>([...(integrationsByTenant.get(tenant) ?? []), ...failingAgents]);
+    const intAlertSev = new Map<string, "critical" | "warning">();
+    for (const a of firing) {
+      if (a.integration && (a.severity === "critical" || a.severity === "warning")) {
+        universe.add(a.integration);
+        if (intAlertSev.get(a.integration) !== "critical") intAlertSev.set(a.integration, a.severity);
+      }
+    }
+    let unhealthyWeight = 0;
+    for (const agent of universe) {
+      if (failingAgents.has(agent) || intAlertSev.get(agent) === "critical") unhealthyWeight += 1;
+      else if (intAlertSev.get(agent) === "warning") unhealthyWeight += 0.5;
+    }
+    const infraFiring = firing.filter((a) => !a.integration);
+
     const worstAlert = [...firing].sort((a, b) => rankSev[a.severity] - rankSev[b.severity])[0];
     const topIssue = worstAlert
       ? alertIssueLine(worstAlert)
@@ -231,11 +304,16 @@ export function buildFleetSummaries(
       displayName: resolveName(tenant),
       extractions: Math.round(extractionsByTenant.get(tenant) ?? 0),
       extractionErrors,
-      integrations: integrationsByTenant.get(tenant)?.size ?? 0,
+      integrations: universe.size,
       activeAlerts: firing.length,
       criticalAlerts,
       warningAlerts,
-      healthScore: scoreFromSignals(criticalAlerts, warningAlerts, extractionErrors > 0 ? 1 : 0),
+      healthScore: scoreFromSignals(
+        unhealthyWeight,
+        universe.size,
+        infraFiring.filter((a) => a.severity === "critical").length,
+        infraFiring.filter((a) => a.severity === "warning").length,
+      ),
       severity: worstFiringSeverity(alerts),
       topIssue,
     };
@@ -656,16 +734,22 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
   const sources = { grafanaMetrics: false, grafanaAlerts: false };
 
   let extractionRows: Array<{ tenant: string; agent: string; value: number }> = [];
-  let errorsByTenant = new Map<string, number>();
+  let errorRows: Array<{ tenant: string; agent: string; value: number }> = [];
+  let failingRows: Array<{ tenant: string; agent: string; value: number }> = [];
   try {
-    const [ext, err] = await Promise.all([
+    const toRows = (rows: Awaited<ReturnType<typeof queryInstant>>) =>
+      rows
+        .filter((r) => r.metric.tenant_id)
+        .map((r) => ({ tenant: r.metric.tenant_id, agent: r.metric.agent_type ?? "?", value: r.value }));
+    const [ext, err, failing] = await Promise.all([
       queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_total[${w}]))`),
-      queryInstant(`sum by (tenant_id) (increase(veza_platform_extraction_errors_total[${w}]))`),
+      queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_errors_total[${w}]))`),
+      // authoritative currently-failing datasources (same gauge the detail page weights)
+      queryInstant(`sum by (tenant_id, agent_type) (cookie_platform_scheduling_error_reasons{stage="extract"})`),
     ]);
-    extractionRows = ext
-      .filter((r) => r.metric.tenant_id)
-      .map((r) => ({ tenant: r.metric.tenant_id, agent: r.metric.agent_type ?? "?", value: r.value }));
-    for (const r of err) if (r.metric.tenant_id) errorsByTenant.set(r.metric.tenant_id, r.value);
+    extractionRows = toRows(ext);
+    errorRows = toRows(err);
+    failingRows = toRows(failing);
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn("[tenant-health] fleet metrics query failed:", e instanceof Error ? e.message : e);
@@ -681,7 +765,7 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
 
   const customers = await fetchCustomerNames();
   const tenants = buildFleetSummaries(
-    { extractionRows, errorsByTenant, alertsByTenant },
+    { extractionRows, errorRows, failingRows, alertsByTenant },
     makeNameResolver(customers),
   );
   return {
@@ -690,7 +774,9 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
     tenants,
     totals: {
       tenants: tenants.length,
-      unhealthy: tenants.filter((t) => t.healthScore < 80).length,
+      // "Unhealthy" = the red tier (<50); matches healthTone, and avoids flagging
+      // every tenant with a single failing datasource now that scores are proportional.
+      unhealthy: tenants.filter((t) => t.healthScore < 50).length,
       activeAlerts: tenants.reduce((n, t) => n + t.activeAlerts, 0),
     },
     sources,
