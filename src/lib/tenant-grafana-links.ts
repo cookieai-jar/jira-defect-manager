@@ -4,8 +4,13 @@
  * are just query-string construction. base is GRAFANA_URL (trailing slash trimmed).
  */
 
-/** Generic per-connector dashboard (vars: tenant_id, agent_type, namespace). */
-const CONNECTOR_DASHBOARD = "connector-detail";
+/**
+ * "Integrations Health" — the per-integration drill-down (vars: tenant_id,
+ * agent_type). Verified live: uid `integrations-health` resolves and its
+ * agent_type variable is labeled "Integration (agent_type)". The old
+ * `connector-detail` uid 404'd.
+ */
+const CONNECTOR_DASHBOARD = "integrations-health";
 /** "All Tenants — Integration & LCM Health" — the tenant health overview. */
 const TENANT_HEALTH_DASHBOARD = "jd6cs94";
 
@@ -14,7 +19,7 @@ function trimBase(base: string | null | undefined): string | null {
   return base.replace(/\/$/, "");
 }
 
-/** Per-integration drill-down: the connector-detail dashboard scoped to this tenant + agent_type. */
+/** Per-integration drill-down: the Integrations Health dashboard scoped to this tenant + agent_type. */
 export function connectorDetailUrl(
   base: string | null | undefined,
   tenant: string,
@@ -25,7 +30,6 @@ export function connectorDetailUrl(
   const params = new URLSearchParams({
     "var-tenant_id": tenant,
     "var-agent_type": agentType,
-    "var-namespace": `${tenant}-dp`,
   });
   return `${b}/d/${CONNECTOR_DASHBOARD}?${params.toString()}`;
 }

@@ -2,15 +2,15 @@ import { describe, it, expect } from "vitest";
 import { connectorDetailUrl, tenantHealthDashboardUrl, lokiErrorLogsUrl } from "@/lib/tenant-grafana-links";
 
 describe("connectorDetailUrl", () => {
-  it("builds a connector-detail link scoped to tenant + agent_type + namespace", () => {
+  it("builds an integrations-health link scoped to tenant + agent_type", () => {
     const url = connectorDetailUrl("https://g.example.net", "bcgprod", "sharepoint");
-    expect(url).toContain("https://g.example.net/d/connector-detail?");
+    expect(url).toContain("https://g.example.net/d/integrations-health?");
     expect(url).toContain("var-tenant_id=bcgprod");
     expect(url).toContain("var-agent_type=sharepoint");
-    expect(url).toContain("var-namespace=bcgprod-dp");
+    expect(url).not.toContain("var-namespace"); // this dashboard has no namespace var
   });
   it("trims a trailing slash on the base", () => {
-    expect(connectorDetailUrl("https://g/", "t", "okta")).toContain("https://g/d/connector-detail");
+    expect(connectorDetailUrl("https://g/", "t", "okta")).toContain("https://g/d/integrations-health");
   });
   it("returns null without a base URL", () => {
     expect(connectorDetailUrl(null, "t", "okta")).toBeNull();
