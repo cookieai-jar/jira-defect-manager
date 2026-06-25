@@ -109,7 +109,10 @@ export function aggregateErrorReasons(
     list.push({ reason: e.reason, errorClass: e.errorClass, count: e.count });
     byInt.set(e.integration, list);
   }
-  const sortDesc = (a: ErrorReason, b: ErrorReason) => b.count - a.count || a.reason.localeCompare(b.reason);
+  const sortDesc = (a: ErrorReason, b: ErrorReason) =>
+    b.count - a.count ||
+    a.reason.localeCompare(b.reason) ||
+    (a.integration ?? "").localeCompare(b.integration ?? "");
   const byIntegration = new Map<string, ErrorReason[]>();
   for (const [k, v] of byInt) byIntegration.set(k, [...v].sort(sortDesc).slice(0, perIntegration));
   const topErrorReasons = [...all].sort(sortDesc).slice(0, topN);
@@ -489,8 +492,10 @@ export async function buildTenantReport(
 
     // Authoritative failures (scheduling_error_reasons gauge): class + error_reason.
     errAgg = aggregateErrorReasons(errReasons);
-    for (const r of freshness) if (r.metric.agent_type && Number.isFinite(r.value)) freshnessByType.set(r.metric.agent_type, r.value);
-    for (const r of lag) if (r.metric.agent_type && Number.isFinite(r.value)) lagByType.set(r.metric.agent_type, r.value);
+    // Clamp negatives: clock skew can make (time() - ts) slightly negative for a
+    // just-now success/pending — treat as 0 age, not "-2s".
+    for (const r of freshness) if (r.metric.agent_type && Number.isFinite(r.value)) freshnessByType.set(r.metric.agent_type, Math.max(0, r.value));
+    for (const r of lag) if (r.metric.agent_type && Number.isFinite(r.value)) lagByType.set(r.metric.agent_type, Math.max(0, r.value));
     // running now: in-progress extract queue (replaces the Loki START approximation).
     extractingNowTypes = new Set(
       queueExtract.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),

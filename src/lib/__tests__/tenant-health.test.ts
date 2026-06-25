@@ -217,6 +217,14 @@ describe("aggregateErrorReasons", () => {
     expect(a.failingByType.get("awslambda")).toBe(398);
     expect(a.failingByType.get("ec2")).toBeUndefined(); // 0 dropped
   });
+  it("counts a tenant-level row (no agent_type) toward errorClass but not failingByType", () => {
+    const a = aggregateErrorReasons([
+      { metric: { class: "internal", error_reason: "INTERNAL" }, value: 9 }, // no agent_type
+    ]);
+    expect(a.errorClass.internal).toBe(9);
+    expect(a.failingByType.size).toBe(0);
+    expect(a.byIntegration.size).toBe(0);
+  });
   it("returns top reasons per integration, most frequent first, with class", () => {
     const a = aggregateErrorReasons(rows, 3);
     expect(a.byIntegration.get("awslambda")).toEqual([

@@ -48,7 +48,7 @@ describe("errorByTypeQuery", () => {
   });
 });
 
-import { normalizeErrorSignature, topErrorsByType, errorTimelineQuery, errorSamplesQuery, recentStartByTypeQuery } from "@/lib/tenant-logs";
+import { normalizeErrorSignature, topErrorsByType, errorTimelineQuery, errorSamplesQuery } from "@/lib/tenant-logs";
 
 describe("normalizeErrorSignature", () => {
   it("strips the [type - uuid] prefix and ids so the same failure collapses", () => {
@@ -93,11 +93,6 @@ describe("error query builders", () => {
   it("errorSamplesQuery selects parsed error lines", () => {
     expect(errorSamplesQuery("bcgprod")).toBe(
       '{namespace="bcgprod-dp"} |= `Error extracting data sources` | json',
-    );
-  });
-  it("recentStartByTypeQuery counts recent START lines per datasource_type", () => {
-    expect(recentStartByTypeQuery("bcgprod", "10m")).toBe(
-      'sum by (datasource_type) (count_over_time({namespace="bcgprod-dp"} |= `START - Extracting data source` | json [10m]))',
     );
   });
 });
