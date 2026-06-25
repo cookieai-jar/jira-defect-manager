@@ -1097,35 +1097,180 @@ function FeatureFlagsCard({ featureFlags }: { featureFlags: TenantFeatureFlags |
   );
 }
 
+const TL_WIDTH = 800;
+const TL_HEIGHT = 220;
+const TL_PADDING = { top: 16, right: 18, bottom: 44, left: 52 };
+const TL_LINE = "hsl(8 80% 58%)"; // error red
+
+/** Round a count up to a "nice" axis maximum (1/2/5 × 10ⁿ). */
+function niceMax(v: number): number {
+  if (v <= 1) return 1;
+  if (v <= 5) return 5;
+  const order = Math.pow(10, Math.floor(Math.log10(v)));
+  const norm = v / order;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return nice * order;
+}
+
+/** Compact axis number: 2000 -> "2k", 1500 -> "1.5k". */
+function fmtCompact(v: number): string {
+  if (v >= 1000) {
+    const k = v / 1000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+  }
+  return String(v);
+}
+
+/** Short clock label for an x tick, e.g. "9 PM". */
+function fmtHour(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric" });
+}
+
 function ErrorTimeline({ points }: { points: ErrorTimelinePoint[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+
   const max = points.reduce((m, p) => Math.max(m, p.count), 0);
   if (points.length === 0 || max === 0) {
     return <p className="text-sm text-fg-muted">No extraction errors in the window.</p>;
   }
+
+  const innerW = TL_WIDTH - TL_PADDING.left - TL_PADDING.right;
+  const innerH = TL_HEIGHT - TL_PADDING.top - TL_PADDING.bottom;
+  const maxY = niceMax(max);
+  const x = (i: number) =>
+    TL_PADDING.left + (points.length <= 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+  const y = (v: number) => TL_PADDING.top + innerH - (v / maxY) * innerH;
+
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(p.count)}`).join(" ");
+  const areaPath = `${linePath} L ${x(points.length - 1)} ${y(0)} L ${x(0)} ${y(0)} Z`;
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(t * maxY));
+  const xStep = Math.max(1, Math.floor(points.length / 6));
+  const xTickIndices: number[] = [];
+  for (let i = 0; i < points.length; i += xStep) xTickIndices.push(i);
+  if (xTickIndices[xTickIndices.length - 1] !== points.length - 1) xTickIndices.push(points.length - 1);
+
   return (
-    <div className="flex h-20 w-full items-end gap-px">
-      {points.map((p, i) => {
-        // Floor visible bars to a hairline so empty buckets still register.
-        const pct = p.count > 0 ? Math.max(4, (p.count / max) * 100) : 0;
-        const tone =
-          p.count >= max * 0.66
-            ? "bg-danger"
-            : p.count >= max * 0.33
-              ? "bg-warning"
-              : "bg-accent";
-        return (
-          <div
+    <div className="relative" onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${TL_WIDTH} ${TL_HEIGHT}`} className="w-full h-auto" preserveAspectRatio="none">
+        {/* Y gridlines + tick labels */}
+        {yTicks.map((v, i) => {
+          const yPos = y(v);
+          return (
+            <g key={i}>
+              <line
+                x1={TL_PADDING.left}
+                x2={TL_WIDTH - TL_PADDING.right}
+                y1={yPos}
+                y2={yPos}
+                stroke="hsl(220 13% 20%)"
+                strokeWidth="1"
+                strokeDasharray={i === 0 ? "" : "2 3"}
+              />
+              <text
+                x={TL_PADDING.left - 8}
+                y={yPos}
+                textAnchor="end"
+                dominantBaseline="middle"
+                fill="hsl(220 8% 45%)"
+                fontSize="10"
+                fontFamily="ui-monospace, Menlo, monospace"
+              >
+                {fmtCompact(v)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* X tick labels */}
+        {xTickIndices.map((i) => (
+          <text
             key={i}
-            className="flex-1 min-w-0 h-full flex items-end"
-            title={`${new Date(p.t).toLocaleString()} · ${p.count.toLocaleString()} error${p.count === 1 ? "" : "s"}`}
+            x={x(i)}
+            y={TL_HEIGHT - TL_PADDING.bottom + 16}
+            textAnchor="middle"
+            fill="hsl(220 8% 45%)"
+            fontSize="10"
+            fontFamily="ui-monospace, Menlo, monospace"
           >
-            <div
-              className={cn("w-full rounded-sm", p.count > 0 ? tone : "bg-bg-muted")}
-              style={{ height: `${pct}%`, minHeight: p.count > 0 ? undefined : "1px" }}
+            {fmtHour(points[i].t)}
+          </text>
+        ))}
+
+        {/* Axis names */}
+        <text
+          x={TL_PADDING.left + innerW / 2}
+          y={TL_HEIGHT - 6}
+          textAnchor="middle"
+          fill="hsl(220 8% 55%)"
+          fontSize="11"
+        >
+          Time (hourly)
+        </text>
+        <text
+          x={14}
+          y={TL_PADDING.top + innerH / 2}
+          textAnchor="middle"
+          fill="hsl(220 8% 55%)"
+          fontSize="11"
+          transform={`rotate(-90 14 ${TL_PADDING.top + innerH / 2})`}
+        >
+          Errors
+        </text>
+
+        {/* Area + line */}
+        <path d={areaPath} fill={TL_LINE} fillOpacity="0.08" />
+        <path d={linePath} fill="none" stroke={TL_LINE} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+
+        {/* Hover hit zones */}
+        {points.map((_, i) => {
+          const w = innerW / Math.max(1, points.length - 1);
+          return (
+            <rect
+              key={i}
+              x={x(i) - w / 2}
+              y={TL_PADDING.top}
+              width={w}
+              height={innerH}
+              fill="transparent"
+              onMouseEnter={() => setHover(i)}
             />
+          );
+        })}
+
+        {/* Hover indicator */}
+        {hover !== null && (
+          <>
+            <line
+              x1={x(hover)}
+              x2={x(hover)}
+              y1={TL_PADDING.top}
+              y2={TL_HEIGHT - TL_PADDING.bottom}
+              stroke="hsl(220 10% 96%)"
+              strokeWidth="1"
+              strokeDasharray="2 3"
+              opacity="0.4"
+            />
+            <circle cx={x(hover)} cy={y(points[hover].count)} r="3.5" fill={TL_LINE} />
+          </>
+        )}
+      </svg>
+
+      {hover !== null && (
+        <div
+          className="absolute -translate-x-1/2 pointer-events-none"
+          style={{ left: `${(x(hover) / TL_WIDTH) * 100}%`, top: 0 }}
+        >
+          <div className="mt-1 rounded border border-border-strong bg-bg-card px-2.5 py-1.5 text-[11px] shadow-lg whitespace-nowrap">
+            <div className="font-mono text-fg-subtle mb-0.5">{new Date(points[hover].t).toLocaleString()}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: TL_LINE }} />
+              <span className="text-fg-muted">Errors</span>
+              <span className="font-mono text-fg ml-1">{points[hover].count.toLocaleString()}</span>
+            </div>
           </div>
-        );
-      })}
+        </div>
+      )}
     </div>
   );
 }
