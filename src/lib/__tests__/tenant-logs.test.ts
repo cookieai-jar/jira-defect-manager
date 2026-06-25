@@ -109,3 +109,74 @@ describe("normalizeErrorSignature — double extract prefix", () => {
     expect(sig).toBe("connect error: cannot reach host");
   });
 });
+
+import { parseFeatureFlagLines, parseDataPlaneInfo, regionFromDatasourceName, featureFlagsQuery, dataPlaneInfoQuery } from "@/lib/tenant-logs";
+
+describe("regionFromDatasourceName", () => {
+  it("extracts the region from a regional Loki datasource name", () => {
+    expect(regionFromDatasourceName("grafanacloud-vezalondon-logs-eu-west-2")).toBe("eu-west-2");
+    expect(regionFromDatasourceName("grafanacloud-vezacanada-logs-ca-central-1")).toBe("ca-central-1");
+  });
+  it("returns null when there is no region segment", () => {
+    expect(regionFromDatasourceName("grafanacloud-logs")).toBeNull();
+    expect(regionFromDatasourceName(undefined)).toBeNull();
+  });
+});
+
+describe("parseFeatureFlagLines", () => {
+  it("takes current from the newest line and keeps the change history", () => {
+    // lines are newest-first (Loki backward)
+    const lines = [
+      JSON.stringify({ ts: 1782349792, flags: "NRR_A,NRR_B" }),
+      JSON.stringify({ ts: 1782300000, flags: "NRR_A" }),
+    ];
+    const ff = parseFeatureFlagLines(lines);
+    expect(ff.current).toEqual(["NRR_A", "NRR_B"]);
+    expect(ff.changes).toHaveLength(2);
+    expect(ff.changes[0].t).toBe(new Date(1782349792 * 1000).toISOString()); // newest first
+    expect(ff.changes[1].flags).toEqual(["NRR_A"]);
+  });
+  it("handles single flag, whitespace lists, and skips junk / missing ts", () => {
+    expect(parseFeatureFlagLines([JSON.stringify({ ts: 1, flags: "NRR_X" })]).current).toEqual(["NRR_X"]);
+    expect(parseFeatureFlagLines([JSON.stringify({ ts: 1, flags: "NRR_X NRR_Y" })]).current).toEqual(["NRR_X", "NRR_Y"]);
+    expect(parseFeatureFlagLines(["bad", JSON.stringify({ flags: "NRR_X" })]).changes).toEqual([]); // no ts -> skipped
+  });
+  it("returns empty for no lines", () => {
+    expect(parseFeatureFlagLines([])).toEqual({ current: [], changes: [] });
+  });
+  it("sorts un-ordered multi-stream input by ts and collapses duplicate emissions", () => {
+    // out-of-order (as flattened per-pod streams arrive), with repeated identical sets
+    const lines = [
+      JSON.stringify({ ts: 1000, flags: "NRR_A" }),
+      JSON.stringify({ ts: 3000, flags: "NRR_A,NRR_B" }), // newest
+      JSON.stringify({ ts: 2999, flags: "NRR_A,NRR_B" }), // dup of newest set
+      JSON.stringify({ ts: 2000, flags: "NRR_A" }),
+    ];
+    const ff = parseFeatureFlagLines(lines);
+    expect(ff.current).toEqual(["NRR_A", "NRR_B"]); // truly newest despite input order
+    // collapses the two identical [A,B] emissions; transitions: [A,B] then [A]
+    expect(ff.changes.map((c) => c.flags)).toEqual([["NRR_A", "NRR_B"], ["NRR_A"]]);
+  });
+});
+
+describe("parseDataPlaneInfo", () => {
+  it("reads version + edp_id from the newest parseable line", () => {
+    const lines = [JSON.stringify({ current_version: "2026.6.22", edp_id: "019d44e2" }), "junk"];
+    expect(parseDataPlaneInfo(lines)).toEqual({ insightPointVersion: "2026.6.22", edpId: "019d44e2" });
+  });
+  it("nulls missing fields and empty input", () => {
+    expect(parseDataPlaneInfo([JSON.stringify({})])).toEqual({ insightPointVersion: null, edpId: null });
+    expect(parseDataPlaneInfo([])).toEqual({ insightPointVersion: null, edpId: null });
+  });
+});
+
+describe("feature-flag / data-plane query builders", () => {
+  it("featureFlagsQuery selects the dynamic-flags-updated line", () => {
+    expect(featureFlagsQuery("bcgprod")).toBe(
+      '{namespace="bcgprod-dp"} |= `Dynamic feature flags updated` | json',
+    );
+  });
+  it("dataPlaneInfoQuery selects the data-plane info line (control-plane namespace)", () => {
+    expect(dataPlaneInfoQuery("bcgprod")).toBe('{namespace="bcgprod-cp"} |= `Data plane info` | json');
+  });
+});

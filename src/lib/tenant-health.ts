@@ -343,8 +343,10 @@ export async function buildTenantReport(
   let datasources: number | null = null;
   let outdatedByType = new Map<string, number>();
   let parsingNowTypes = new Set<string>();
+  let cluster: string | null = null;
+  let namespace: string | null = null;
   try {
-    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow] = await Promise.all([
+    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow, uptime] = await Promise.all([
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_errors_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_duration_ms_total${sel}[${w}]))`),
@@ -356,6 +358,8 @@ export async function buildTenantReport(
       queryInstant(`sum by (agent_type) (veza_platform_datasources_flagged_outdated_total${sel})`),
       // recent parse activity = "parsing right now".
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_total${sel}[10m]))`),
+      // label-bearing series for tenant config (cluster/namespace).
+      queryInstant(`veza_platform_parser_uptime_ms${sel}`),
     ]);
     inventory = [...byLabel(ext, "agent_type").keys()];
     extractionErrors = byLabel(err, "agent_type");
@@ -374,6 +378,8 @@ export async function buildTenantReport(
     parsingNowTypes = new Set(
       parsingNow.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),
     );
+    cluster = uptime[0]?.metric.cluster ?? uptime[0]?.metric.k8s_cluster_name ?? null;
+    namespace = uptime[0]?.metric.namespace ?? null;
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn(`[tenant-health] metrics query failed for ${tenant}:`, e instanceof Error ? e.message : e);
@@ -404,6 +410,9 @@ export async function buildTenantReport(
   let topErrorsByType = new Map<string, ErrorSignature[]>();
   let errorTimeline: TenantHealthReport["errorTimeline"] = [];
   let extractingNowTypes = new Set<string>();
+  let region: string | null = null;
+  let featureFlags: TenantHealthReport["featureFlags"] = null;
+  let dataPlane = { insightPointVersion: null as string | null, edpId: null as string | null };
   try {
     const logs = await extractionLogStats(tenant, inventory, windowHours);
     if (logs.dsUid) {
@@ -414,6 +423,9 @@ export async function buildTenantReport(
       topErrorsByType = logs.topErrorsByType;
       errorTimeline = logs.errorTimeline;
       extractingNowTypes = logs.extractingNowTypes;
+      region = logs.region;
+      featureFlags = logs.featureFlags;
+      dataPlane = logs.dataPlane;
       sources.loki = true;
     }
   } catch (e) {
@@ -464,6 +476,14 @@ export async function buildTenantReport(
     integrations,
     graphWrites,
     errorTimeline,
+    config: {
+      cluster,
+      namespace,
+      region,
+      insightPointVersion: dataPlane.insightPointVersion,
+      edpId: dataPlane.edpId,
+    },
+    featureFlags,
     healthDashboardUrl: tenantHealthDashboardUrl(grafanaBase),
     alerts,
     errorClassification: classifyErrors(alerts),

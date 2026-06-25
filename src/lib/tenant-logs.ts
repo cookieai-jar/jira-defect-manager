@@ -4,8 +4,13 @@ import {
   lokiCountQuery,
   lokiRangeQuery,
   lokiLogLines,
+  type LokiDatasource,
 } from "@/lib/grafana";
-import type { ErrorSignature, ErrorTimelinePoint } from "@/types/tenant";
+import type {
+  ErrorSignature,
+  ErrorTimelinePoint,
+  TenantFeatureFlags,
+} from "@/types/tenant";
 
 /**
  * Log-based extraction counts. The extractor worker logs a START / FINISH line
@@ -26,6 +31,11 @@ const ERROR_LINE = "Error extracting data sources";
 /** Stream selector for a tenant's data-plane logs. */
 export function tenantDpSelector(tenant: string): string {
   return `{namespace="${tenant}-dp"}`;
+}
+
+/** Stream selector for a tenant's control-plane logs. */
+export function tenantCpSelector(tenant: string): string {
+  return `{namespace="${tenant}-cp"}`;
 }
 
 /** Probe selector: any extraction line in the tenant's data plane. */
@@ -62,6 +72,72 @@ export function errorSamplesQuery(tenant: string): string {
 /** LogQL metric: recent START lines per integration — "extracting right now" signal. */
 export function recentStartByTypeQuery(tenant: string, bucket = "10m"): string {
   return `sum by (datasource_type) (count_over_time(${tenantDpSelector(tenant)} |= \`${START_LINE}\` | json [${bucket}]))`;
+}
+
+const FEATURE_FLAG_LINE = "Dynamic feature flags updated";
+const DATA_PLANE_INFO_LINE = "Data plane info";
+
+/** LogQL: dynamic-feature-flag change lines (parsed). */
+export function featureFlagsQuery(tenant: string): string {
+  return `${tenantDpSelector(tenant)} |= \`${FEATURE_FLAG_LINE}\` | json`;
+}
+
+/** LogQL: data-plane info lines (parsed) — version, edp_id. Logged in the control plane. */
+export function dataPlaneInfoQuery(tenant: string): string {
+  return `${tenantCpSelector(tenant)} |= \`${DATA_PLANE_INFO_LINE}\` | json`;
+}
+
+/** PURE. Extract a cloud region from a Loki datasource name, e.g. "...-eu-west-2" -> "eu-west-2". */
+export function regionFromDatasourceName(name: string | undefined): string | null {
+  const m = /((?:af|ap|ca|eu|me|sa|us)-[a-z]+-\d+)\b/i.exec(name ?? "");
+  return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * PURE. Parse "Dynamic feature flags updated" log lines into current flags + a
+ * change history. Input order is NOT trusted (Loki returns multiple per-pod
+ * streams that flatten un-sorted), so we sort by timestamp descending and
+ * collapse consecutive runs of an identical flag set into one transition.
+ */
+export function parseFeatureFlagLines(lines: string[]): TenantFeatureFlags {
+  const parsed: { t: string; ms: number; flags: string[] }[] = [];
+  for (const raw of lines) {
+    let j: { ts?: number; flags?: string };
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (typeof j.ts !== "number") continue;
+    const flags = String(j.flags ?? "")
+      .split(/[,\s]+/)
+      .map((f) => f.trim())
+      .filter(Boolean);
+    parsed.push({ t: new Date(j.ts * 1000).toISOString(), ms: j.ts, flags });
+  }
+  parsed.sort((a, b) => b.ms - a.ms); // newest first
+  const changes: TenantFeatureFlags["changes"] = [];
+  let prevSig: string | null = null;
+  for (const p of parsed) {
+    const sig = p.flags.join("|");
+    if (sig === prevSig) continue; // collapse repeated identical emissions
+    changes.push({ t: p.t, flags: p.flags });
+    prevSig = sig;
+  }
+  return { current: changes[0]?.flags ?? [], changes };
+}
+
+/** PURE. Latest data-plane version + edp_id from "Data plane info" lines (newest-first input). */
+export function parseDataPlaneInfo(lines: string[]): { insightPointVersion: string | null; edpId: string | null } {
+  for (const raw of lines) {
+    try {
+      const j = JSON.parse(raw) as { current_version?: string; edp_id?: string };
+      return { insightPointVersion: j.current_version ?? null, edpId: j.edp_id ?? null };
+    } catch {
+      continue;
+    }
+  }
+  return { insightPointVersion: null, edpId: null };
 }
 
 /**
@@ -155,28 +231,33 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
 
 // --- regional datasource discovery (cached) -----------------------------------
 
-const _dsCache = new Map<string, string | null>();
+const _dsCache = new Map<string, LokiDatasource | null>();
 
 /**
- * Find the Loki datasource uid that holds this tenant's data-plane extraction
- * logs, probing regional datasources in parallel. Cached per tenant (incl. a
- * null "not found" so we don't re-probe every load).
+ * Find the Loki datasource that holds this tenant's data-plane extraction logs,
+ * probing regional datasources in parallel. Cached per tenant (incl. a null
+ * "not found" so we don't re-probe every load).
  */
-export async function findTenantLogDatasource(tenant: string): Promise<string | null> {
+export async function findTenantLogDatasourceInfo(tenant: string): Promise<LokiDatasource | null> {
   if (_dsCache.has(tenant)) return _dsCache.get(tenant) ?? null;
-  let uid: string | null = null;
+  let ds: LokiDatasource | null = null;
   try {
     const datasources = await listLokiDatasources();
     const probe = extractionProbeSelector(tenant);
     const hits = await Promise.all(
-      datasources.map(async (d) => ((await lokiStreamExists(d.uid, probe).catch(() => false)) ? d.uid : null)),
+      datasources.map(async (d) => ((await lokiStreamExists(d.uid, probe).catch(() => false)) ? d : null)),
     );
-    uid = hits.find((u): u is string => u !== null) ?? null;
+    ds = hits.find((d): d is LokiDatasource => d !== null) ?? null;
   } catch {
-    uid = null;
+    ds = null;
   }
-  _dsCache.set(tenant, uid);
-  return uid;
+  _dsCache.set(tenant, ds);
+  return ds;
+}
+
+/** The uid of the tenant's regional Loki datasource (back-compat helper). */
+export async function findTenantLogDatasource(tenant: string): Promise<string | null> {
+  return (await findTenantLogDatasourceInfo(tenant))?.uid ?? null;
 }
 
 /** Reset the discovery cache (tests). */
@@ -198,6 +279,12 @@ export interface ExtractionLogStats {
   errorTimeline: ErrorTimelinePoint[];
   /** Integration types with extraction START activity in the recent window. */
   extractingNowTypes: Set<string>;
+  /** Hosting region derived from the regional Loki datasource. */
+  region: string | null;
+  /** Dynamic feature flags + change history. */
+  featureFlags: TenantFeatureFlags;
+  /** Data-plane version + edp id. */
+  dataPlane: { insightPointVersion: string | null; edpId: string | null };
 }
 
 function toMap(result: Array<{ metric: Record<string, string>; value: number }>): Map<string, number> {
@@ -225,8 +312,8 @@ export async function extractionLogStats(
   inventory: string[],
   windowHours = 24,
 ): Promise<ExtractionLogStats> {
-  const dsUid = await findTenantLogDatasource(tenant);
-  if (!dsUid) {
+  const ds = await findTenantLogDatasourceInfo(tenant);
+  if (!ds) {
     return {
       dsUid: null,
       providersByType: new Map(),
@@ -235,13 +322,18 @@ export async function extractionLogStats(
       topErrorsByType: new Map(),
       errorTimeline: [],
       extractingNowTypes: new Set(),
+      region: null,
+      featureFlags: { current: [], changes: [] },
+      dataPlane: { insightPointVersion: null, edpId: null },
     };
   }
+  const dsUid = ds.uid;
   // Base integration types only (skip CSC pairs); fan out distinct-provider counts.
   const types = inventory.filter((t) => !t.includes("-"));
   const nowSec = Math.floor(Date.now() / 1000);
   const startSec = nowSec - windowHours * 3600;
-  const [total, error, perType, samples, timeline, recentStart] = await Promise.all([
+  const flagsStartSec = nowSec - 30 * 24 * 3600; // feature-flag changes: look back 30d
+  const [total, error, perType, samples, timeline, recentStart, flagLines, dpLines] = await Promise.all([
     lokiCountQuery(dsUid, totalProvidersQuery(tenant)).catch(() => []),
     lokiCountQuery(dsUid, errorByTypeQuery(tenant, windowHours)).catch(() => []),
     mapLimit(types, 16, async (ty) => {
@@ -251,6 +343,8 @@ export async function extractionLogStats(
     lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 500).catch(() => []),
     lokiRangeQuery(dsUid, errorTimelineQuery(tenant, "1h"), startSec, nowSec, 3600).catch(() => []),
     lokiCountQuery(dsUid, recentStartByTypeQuery(tenant, "10m")).catch(() => []),
+    lokiLogLines(dsUid, featureFlagsQuery(tenant), flagsStartSec, nowSec, 50).catch(() => []),
+    lokiLogLines(dsUid, dataPlaneInfoQuery(tenant), flagsStartSec, nowSec, 5).catch(() => []),
   ]);
   const providersByType = new Map(perType.filter(([, n]) => n > 0));
   const errorTimeline: ErrorTimelinePoint[] =
@@ -266,5 +360,8 @@ export async function extractionLogStats(
     topErrorsByType: topErrorsByType(samples),
     errorTimeline,
     extractingNowTypes,
+    region: regionFromDatasourceName(ds.name),
+    featureFlags: parseFeatureFlagLines(flagLines),
+    dataPlane: parseDataPlaneInfo(dpLines),
   };
 }

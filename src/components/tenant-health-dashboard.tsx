@@ -15,11 +15,13 @@ import {
   Clock,
   Database,
   ExternalLink,
+  Flag,
   HeartPulse,
   Inbox,
   Network,
   PlugZap,
   RefreshCw,
+  Server,
   Ticket,
   TriangleAlert,
 } from "lucide-react";
@@ -30,6 +32,8 @@ import type {
   IntegrationState,
   Severity,
   TenantAlert,
+  TenantConfigInfo,
+  TenantFeatureFlags,
   TenantHealthReport,
   TenantJiraTicket,
 } from "@/types/tenant";
@@ -407,6 +411,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             </Card>
           </div>
 
+          {/* 7b + 7c side by side: tenant config + dynamic feature flags */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+            <TenantConfigCard config={report.config} />
+            <FeatureFlagsCard featureFlags={report.featureFlags} />
+          </div>
+
           {/* 8. Linked JIRA tickets — by project, priority-sorted, Done collapsed */}
           <Card>
             <CardHeader>
@@ -639,6 +649,115 @@ function GraphWriteRow({ write }: { write: GraphWrite }) {
       </span>
       <span className="font-mono text-fg">{write.count.toLocaleString()}</span>
     </div>
+  );
+}
+
+function ConfigRow({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <span className="text-fg-muted">{label}</span>
+      <span className="font-mono text-fg truncate text-right" title={value ?? undefined}>
+        {value ?? "—"}
+      </span>
+    </div>
+  );
+}
+
+function TenantConfigCard({ config }: { config: TenantConfigInfo }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Server className="h-4 w-4 text-accent" /> Tenant config
+        </CardTitle>
+      </CardHeader>
+      <CardBody className="space-y-1.5">
+        <ConfigRow label="Cluster" value={config.cluster} />
+        <ConfigRow label="Namespace" value={config.namespace} />
+        <ConfigRow label="Region" value={config.region} />
+        <ConfigRow label="Insight-point version" value={config.insightPointVersion} />
+        <ConfigRow label="EDP id" value={config.edpId} />
+        <p className="pt-1 text-[11px] text-fg-subtle">from Grafana labels + data-plane logs</p>
+        <p className="text-[11px] text-fg-subtle">
+          Extraction schedule requires the Veza control-plane API (not yet connected).
+        </p>
+      </CardBody>
+    </Card>
+  );
+}
+
+function FeatureFlagsCard({ featureFlags }: { featureFlags: TenantFeatureFlags | null }) {
+  const empty =
+    !featureFlags ||
+    (featureFlags.current.length === 0 && featureFlags.changes.length === 0);
+
+  if (empty) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Flag className="h-4 w-4 text-accent" /> Feature flags
+          </CardTitle>
+        </CardHeader>
+        <CardBody>
+          <p className="text-sm text-fg-muted">No dynamic feature flags recorded.</p>
+        </CardBody>
+      </Card>
+    );
+  }
+
+  const changes = [...featureFlags.changes]
+    .sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime())
+    .slice(0, 6);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Flag className="h-4 w-4 text-accent" /> Feature flags
+        </CardTitle>
+        <Badge>{featureFlags.current.length}</Badge>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        <div>
+          {featureFlags.current.length === 0 ? (
+            <p className="text-sm text-fg-muted">No flags currently set.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {featureFlags.current.map((flag) => (
+                <span
+                  key={flag}
+                  className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 font-mono text-[11px] text-accent"
+                >
+                  {flag}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="pt-1.5 text-[11px] text-fg-subtle">dynamic (NRR_*) flags</p>
+        </div>
+
+        {changes.length > 0 && (
+          <div className="space-y-1.5 border-t border-border pt-3">
+            <div className="text-[11px] uppercase tracking-wide text-fg-subtle">Change history</div>
+            {changes.map((c, i) => (
+              <div key={i} className="flex items-start gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1 shrink-0 font-mono text-fg-muted">
+                  <Clock className="h-3 w-3" />
+                  {new Date(c.t).toLocaleString()}
+                </span>
+                <span
+                  className="font-mono text-fg-subtle truncate"
+                  title={c.flags.join(", ")}
+                >
+                  {c.flags.join(", ") || "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

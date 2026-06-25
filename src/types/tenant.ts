@@ -169,6 +169,37 @@ export interface ErrorTimelinePoint {
   count: number;
 }
 
+/** A dynamic-feature-flag change event (from the "Dynamic feature flags updated" log). */
+export interface FeatureFlagChange {
+  /** ISO timestamp of the change. */
+  t: string;
+  /** The full flag set after the change. */
+  flags: string[];
+}
+
+/**
+ * Dynamic feature flags for a tenant, recovered from data-plane logs (NRR_*
+ * flags only — static env flags aren't logged here).
+ */
+export interface TenantFeatureFlags {
+  /** Latest known flag set. */
+  current: string[];
+  /** Change events over the window, newest first. */
+  changes: FeatureFlagChange[];
+}
+
+/** Basic tenant config recovered from Grafana labels + data-plane logs (not the Veza API). */
+export interface TenantConfigInfo {
+  cluster: string | null;
+  /** k8s namespace, "<tenant>-cp". */
+  namespace: string | null;
+  /** Hosting region, derived from the tenant's regional Loki datasource. */
+  region: string | null;
+  /** Insight-point (data-plane) version from the "Data plane info" log. */
+  insightPointVersion: string | null;
+  edpId: string | null;
+}
+
 /** Tenant-level Neo4j write volume (write throughput, NOT absolute graph size). */
 export interface GraphWrite {
   entityType: string; // "node" | "edge"
@@ -240,6 +271,10 @@ export interface TenantHealthReport {
   graphWrites: GraphWrite[];
   /** Tenant-level extraction-error counts over time, for the timeline chart. */
   errorTimeline: ErrorTimelinePoint[];
+  /** Basic tenant config (cluster/region/version), from labels + logs. */
+  config: TenantConfigInfo;
+  /** Dynamic feature flags + change history, or null when logs unavailable. */
+  featureFlags: TenantFeatureFlags | null;
   /** Deep link to the tenant-health Grafana dashboard, or null when unconfigured. */
   healthDashboardUrl: string | null;
   /** All active alerts for the tenant (including non-integration infra alerts). */
