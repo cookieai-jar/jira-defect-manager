@@ -8,6 +8,7 @@ import type {
   GraphWrite,
   IntegrationHealth,
   IntegrationMetrics,
+  IntegrationState,
   Severity,
   TenantAlert,
   TenantHealthReport,
@@ -29,6 +30,29 @@ import { connectorDetailUrl, tenantHealthDashboardUrl } from "@/lib/tenant-grafa
 export function jiraCustomerJql(displayName: string): string {
   const escaped = displayName.replace(/"/g, '\\"');
   return `cf[10044] = "${escaped}" ORDER BY updated DESC`;
+}
+
+/** Firing alert whose name signals a stuck/pending/stalled backlog (extraction or parse). */
+export function isStuckAlert(a: TenantAlert): boolean {
+  return a.state === "firing" && /stuck|pending|stalled|backlog/i.test(a.name);
+}
+
+/**
+ * PURE. Derive an integration's success/fail state from its signals.
+ * failing > stalled > idle > ok (first match wins).
+ */
+export function integrationState(ih: {
+  extractionErrors: number;
+  outdated: number;
+  providers: number | null;
+  parseTasks: number;
+  alerts: TenantAlert[];
+}): IntegrationState {
+  const firing = ih.alerts.filter((a) => a.state === "firing");
+  if (ih.extractionErrors > 0 || firing.some((a) => a.severity === "critical")) return "failing";
+  if (ih.outdated > 0 || ih.alerts.some(isStuckAlert)) return "stalled";
+  if ((ih.providers ?? 0) === 0 && ih.parseTasks === 0 && firing.length === 0) return "idle";
+  return "ok";
 }
 
 /** Worst severity in a set (critical > warning > ok). */
@@ -199,6 +223,10 @@ interface IntegrationInputs {
   outdatedByType: Map<string, number>;
   /** Top error signatures per integration. */
   topErrorsByType: Map<string, ErrorSignature[]>;
+  /** Integration types extracting right now (recent START activity). */
+  extractingNowTypes: Set<string>;
+  /** Integration types parsing right now (recent parser task activity). */
+  parsingNowTypes: Set<string>;
   /** Builds the per-connector drill-down URL for an integration (null when unconfigured). */
   connectorUrl: (integration: string) => string | null;
 }
@@ -243,12 +271,16 @@ export function buildIntegrationHealth(
     ]);
     const outdated = Math.round(inputs.outdatedByType.get(integration) ?? 0);
     const topErrors = inputs.topErrorsByType.get(integration) ?? [];
+    const state = integrationState({ extractionErrors, outdated, providers, parseTasks, alerts });
     return {
       integration,
       providers,
       extractionErrors,
       parseAvgMs,
       parseTasks,
+      state,
+      extractingNow: inputs.extractingNowTypes.has(integration),
+      parsingNow: inputs.parsingNowTypes.has(integration),
       outdated,
       topErrors,
       connectorUrl: inputs.connectorUrl(integration),
@@ -308,8 +340,9 @@ export async function buildTenantReport(
   let graphWrites: GraphWrite[] = [];
   let datasources: number | null = null;
   let outdatedByType = new Map<string, number>();
+  let parsingNowTypes = new Set<string>();
   try {
-    const [ext, err, dur, tasks, writes, dsCount, outdated] = await Promise.all([
+    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow] = await Promise.all([
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_errors_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_duration_ms_total${sel}[${w}]))`),
@@ -319,6 +352,8 @@ export async function buildTenantReport(
       queryInstant(`max(cookie_platform_datasource_count${sel})`),
       // outdated datasources = extraction lag; agent_type label is UPPERCASE here.
       queryInstant(`sum by (agent_type) (veza_platform_datasources_flagged_outdated_total${sel})`),
+      // recent parse activity = "parsing right now".
+      queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_total${sel}[10m]))`),
     ]);
     inventory = [...byLabel(ext, "agent_type").keys()];
     extractionErrors = byLabel(err, "agent_type");
@@ -332,6 +367,9 @@ export async function buildTenantReport(
       const k = (r.metric.agent_type ?? "").toLowerCase(); // match lowercase inventory keys
       if (k) outdatedByType.set(k, (outdatedByType.get(k) ?? 0) + r.value);
     }
+    parsingNowTypes = new Set(
+      parsingNow.filter((r) => r.value > 0 && r.metric.agent_type).map((r) => r.metric.agent_type),
+    );
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn(`[tenant-health] metrics query failed for ${tenant}:`, e instanceof Error ? e.message : e);
@@ -361,6 +399,7 @@ export async function buildTenantReport(
   let hasProviderData = false;
   let topErrorsByType = new Map<string, ErrorSignature[]>();
   let errorTimeline: TenantHealthReport["errorTimeline"] = [];
+  let extractingNowTypes = new Set<string>();
   try {
     const logs = await extractionLogStats(tenant, inventory, windowHours);
     if (logs.dsUid) {
@@ -370,6 +409,7 @@ export async function buildTenantReport(
       if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
       topErrorsByType = logs.topErrorsByType;
       errorTimeline = logs.errorTimeline;
+      extractingNowTypes = logs.extractingNowTypes;
       sources.loki = true;
     }
   } catch (e) {
@@ -387,6 +427,8 @@ export async function buildTenantReport(
     alertsByIntegration,
     outdatedByType,
     topErrorsByType,
+    extractingNowTypes,
+    parsingNowTypes,
     connectorUrl: (integration) => connectorDetailUrl(grafanaBase, tenant, integration),
   });
 

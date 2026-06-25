@@ -27,6 +27,7 @@ import type {
   ErrorTimelinePoint,
   GraphWrite,
   IntegrationHealth,
+  IntegrationState,
   Severity,
   TenantAlert,
   TenantHealthReport,
@@ -45,6 +46,15 @@ function severityBadgeClass(severity: Severity): string {
   if (severity === "critical") return "border-danger/40 bg-danger/10 text-danger";
   if (severity === "warning") return "border-warning/40 bg-warning/10 text-warning";
   return "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted";
+}
+
+/** Tone for the integration success/fail state badge (see IntegrationState semantics). */
+function stateBadgeClass(state: IntegrationState): string {
+  if (state === "failing") return "border-danger/40 bg-danger/10 text-danger";
+  if (state === "stalled") return "border-warning/40 bg-warning/10 text-warning";
+  if (state === "ok") return "border-success/40 bg-success/10 text-success";
+  // idle
+  return "border-fg-subtle/40 bg-fg-subtle/10 text-fg-subtle";
 }
 
 function healthTone(score: number): "green" | "yellow" | "red" {
@@ -108,6 +118,14 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
       }),
     [report],
   );
+
+  const liveActivity = useMemo(() => {
+    const integrations = report?.integrations ?? [];
+    return {
+      extracting: integrations.filter((it) => it.extractingNow).map((it) => it.integration),
+      parsing: integrations.filter((it) => it.parsingNow).map((it) => it.integration),
+    };
+  }, [report]);
 
   const ticketGroups = useMemo(
     () => groupTicketsByProject(report?.jiraTickets ?? []),
@@ -262,6 +280,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             />
           </div>
 
+          {/* 3b. Live activity — what's running right now */}
+          <LiveActivityCard
+            extracting={liveActivity.extracting}
+            parsing={liveActivity.parsing}
+          />
+
           {/* 4. Active alerts */}
           <Card>
             <CardHeader>
@@ -300,6 +324,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                     <thead className="sticky top-0 bg-bg-card z-10">
                       <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
                         <th className="text-left font-medium px-4 py-2">Integration</th>
+                        <th className="text-left font-medium px-3 py-2">State</th>
                         <th className="text-right font-medium px-3 py-2">Providers</th>
                         <th className="text-right font-medium px-3 py-2">Lag</th>
                         <th className="text-right font-medium px-3 py-2">Errors</th>
@@ -425,6 +450,79 @@ function AlertRow({ alert }: { alert: TenantAlert }) {
   );
 }
 
+function LiveActivityCard({
+  extracting,
+  parsing,
+}: {
+  extracting: string[];
+  parsing: string[];
+}) {
+  const idle = extracting.length === 0 && parsing.length === 0;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-accent" /> Live activity
+        </CardTitle>
+        <span className="text-[11px] text-fg-subtle">running right now</span>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        {idle ? (
+          <p className="text-sm text-fg-muted">Nothing extracting or parsing right now.</p>
+        ) : (
+          <>
+            <LiveActivityGroup
+              dotClass="bg-success"
+              labelClass="text-success"
+              count={extracting.length}
+              noun="extracting"
+              names={extracting}
+            />
+            <LiveActivityGroup
+              dotClass="bg-accent"
+              labelClass="text-accent"
+              count={parsing.length}
+              noun="parsing"
+              names={parsing}
+            />
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function LiveActivityGroup({
+  dotClass,
+  labelClass,
+  count,
+  noun,
+  names,
+}: {
+  dotClass: string;
+  labelClass: string;
+  count: number;
+  noun: string;
+  names: string[];
+}) {
+  if (count === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      <div className={cn("flex items-center gap-1.5 text-sm font-medium", labelClass)}>
+        <span className={cn("inline-block h-2 w-2 rounded-full animate-pulse", dotClass)} />
+        {count.toLocaleString()} {count === 1 ? "integration" : "integrations"} {noun}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {names.map((name) => (
+          <Badge key={name} className="border border-border-strong bg-bg-muted text-fg-muted">
+            {name}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function IntegrationRow({ it }: { it: IntegrationHealth }) {
   const topErrors = it.topErrors.slice(0, 2);
   return (
@@ -444,6 +542,30 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
             ))}
           </div>
         )}
+      </td>
+      <td className="px-3 py-1.5">
+        <div className="flex flex-col items-start gap-1">
+          <Badge className={cn("border", stateBadgeClass(it.state))}>
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+            {it.state}
+          </Badge>
+          {(it.extractingNow || it.parsingNow) && (
+            <div className="flex items-center gap-2 text-[10px] font-medium">
+              {it.extractingNow && (
+                <span className="inline-flex items-center gap-1 text-success" title="Extracting now">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                  extracting
+                </span>
+              )}
+              {it.parsingNow && (
+                <span className="inline-flex items-center gap-1 text-accent" title="Parsing now">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+                  parsing
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </td>
       <td className="px-3 py-1.5 text-right font-mono text-fg-muted">
         {it.providers == null ? "—" : it.providers.toLocaleString()}

@@ -52,6 +52,11 @@ export function errorSamplesQuery(tenant: string): string {
   return `${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` | json`;
 }
 
+/** LogQL metric: recent START lines per integration — "extracting right now" signal. */
+export function recentStartByTypeQuery(tenant: string, bucket = "10m"): string {
+  return `sum by (datasource_type) (count_over_time(${tenantDpSelector(tenant)} |= \`${START_LINE}\` | json [${bucket}]))`;
+}
+
 /**
  * PURE. Normalize an extractor error message into a stable signature by dropping
  * the per-datasource "[type - uuid]" prefix and any ids, so the same failure
@@ -184,6 +189,8 @@ export interface ExtractionLogStats {
   topErrorsByType: Map<string, ErrorSignature[]>;
   /** Tenant-wide extraction-error counts over time (hourly buckets). */
   errorTimeline: ErrorTimelinePoint[];
+  /** Integration types with extraction START activity in the recent window. */
+  extractingNowTypes: Set<string>;
 }
 
 function toMap(result: Array<{ metric: Record<string, string>; value: number }>): Map<string, number> {
@@ -220,13 +227,14 @@ export async function extractionLogStats(
       errorByType: new Map(),
       topErrorsByType: new Map(),
       errorTimeline: [],
+      extractingNowTypes: new Set(),
     };
   }
   // Base integration types only (skip CSC pairs); fan out distinct-provider counts.
   const types = inventory.filter((t) => !t.includes("-"));
   const nowSec = Math.floor(Date.now() / 1000);
   const startSec = nowSec - windowHours * 3600;
-  const [total, error, perType, samples, timeline] = await Promise.all([
+  const [total, error, perType, samples, timeline, recentStart] = await Promise.all([
     lokiCountQuery(dsUid, totalProvidersQuery(tenant)).catch(() => []),
     lokiCountQuery(dsUid, errorByTypeQuery(tenant, windowHours)).catch(() => []),
     mapLimit(types, 16, async (ty) => {
@@ -235,10 +243,14 @@ export async function extractionLogStats(
     }),
     lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 300).catch(() => []),
     lokiRangeQuery(dsUid, errorTimelineQuery(tenant, "1h"), startSec, nowSec, 3600).catch(() => []),
+    lokiCountQuery(dsUid, recentStartByTypeQuery(tenant, "10m")).catch(() => []),
   ]);
   const providersByType = new Map(perType.filter(([, n]) => n > 0));
   const errorTimeline: ErrorTimelinePoint[] =
     timeline[0]?.points.map((p) => ({ t: p.t, count: Math.round(p.value) })) ?? [];
+  const extractingNowTypes = new Set(
+    recentStart.filter((r) => r.value > 0 && r.metric.datasource_type).map((r) => r.metric.datasource_type),
+  );
   return {
     dsUid,
     providersByType,
@@ -246,5 +258,6 @@ export async function extractionLogStats(
     errorByType: toMap(error),
     topErrorsByType: topErrorsByType(samples),
     errorTimeline,
+    extractingNowTypes,
   };
 }

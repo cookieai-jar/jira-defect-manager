@@ -38,6 +38,15 @@ export const METRIC_LABELS: Record<MetricKey, string> = {
 
 export type Severity = "ok" | "warning" | "critical";
 
+/**
+ * Success/fail state of an integration:
+ * - failing: recent extraction errors or a critical alert
+ * - stalled: outdated datasources or a stuck/pending alert (lag), not failing
+ * - idle: no providers/parse activity/alerts
+ * - ok: extracting cleanly
+ */
+export type IntegrationState = "ok" | "failing" | "stalled" | "idle";
+
 /** A tunable threshold: compare one metric against a value, flag at a severity. */
 export type ThresholdComparator = "gt" | "gte" | "lt" | "lte";
 
@@ -129,6 +138,12 @@ export interface IntegrationHealth {
   /** Windowed avg parse ms per task (null when no parse tasks in window). */
   parseAvgMs: number | null;
   parseTasks: number;
+  /** Derived success/fail state of the integration. */
+  state: IntegrationState;
+  /** Actively extracting right now (recent START activity). */
+  extractingNow: boolean;
+  /** Actively parsing right now (recent parser task activity). */
+  parsingNow: boolean;
   /** Datasources flagged outdated — the extraction-lag/freshness signal. */
   outdated: number;
   /** Top recurring error signatures for this integration (most frequent first). */

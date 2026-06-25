@@ -6,6 +6,7 @@ import {
   computeHealthScore,
   buildTopIssues,
   buildIntegrationHealth,
+  integrationState,
 } from "@/lib/tenant-health";
 import { makeNameResolver } from "@/lib/tenant-mapping";
 import type { Severity, TenantAlert } from "@/types/tenant";
@@ -56,8 +57,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
     expect(
@@ -74,7 +75,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -86,6 +87,34 @@ describe("buildTopIssues", () => {
     expect(issues).toContain("s3: ParseFailures");
     expect(issues).toContain("ad: 5 extraction errors");
     expect(issues.some((i) => i.includes("Info"))).toBe(false);
+  });
+});
+
+describe("integrationState", () => {
+  const base = { extractionErrors: 0, outdated: 0, providers: 5, parseTasks: 10, alerts: [] as TenantAlert[] };
+  it("failing when there are extraction errors", () => {
+    expect(integrationState({ ...base, extractionErrors: 3 })).toBe("failing");
+  });
+  it("failing on a critical firing alert (even with no errors)", () => {
+    expect(integrationState({ ...base, alerts: [alert({ severity: "critical" })] })).toBe("failing");
+  });
+  it("stalled when datasources are outdated (and not failing)", () => {
+    expect(integrationState({ ...base, outdated: 12 })).toBe("stalled");
+  });
+  it("stalled on a stuck/pending alert", () => {
+    expect(
+      integrationState({ ...base, alerts: [alert({ severity: "warning", name: "ExtractionJobsStuckPending_Tier24" })] }),
+    ).toBe("stalled");
+  });
+  it("idle when no providers, no parse tasks, no alerts", () => {
+    expect(integrationState({ extractionErrors: 0, outdated: 0, providers: 0, parseTasks: 0, alerts: [] })).toBe("idle");
+    expect(integrationState({ extractionErrors: 0, outdated: 0, providers: null, parseTasks: 0, alerts: [] })).toBe("idle");
+  });
+  it("ok when extracting cleanly", () => {
+    expect(integrationState(base)).toBe("ok");
+  });
+  it("failing takes precedence over stalled", () => {
+    expect(integrationState({ ...base, extractionErrors: 1, outdated: 99 })).toBe("failing");
   });
 });
 
@@ -101,6 +130,8 @@ describe("buildIntegrationHealth", () => {
       alertsByIntegration: new Map([["s3", [alert({ severity: "warning", integration: "s3" })]]]),
       outdatedByType: new Map([["s3", 7]]),
       topErrorsByType: new Map([["s3", [{ signature: "connect error", count: 14 }]]]),
+      extractingNowTypes: new Set(["okta"]),
+      parsingNowTypes: new Set(["s3"]),
       connectorUrl: (i) => `https://g/d/connector-detail?var-agent_type=${i}`,
     });
     const names = rows.map((r) => r.integration);
@@ -113,6 +144,9 @@ describe("buildIntegrationHealth", () => {
     expect(okta.providers).toBe(12);
     expect(okta.parseAvgMs).toBe(200); // 2000ms / 10 tasks
     expect(okta.severity).toBe("ok");
+    expect(okta.state).toBe("ok");
+    expect(okta.extractingNow).toBe(true); // in extractingNowTypes
+    expect(okta.parsingNow).toBe(false);
     expect(okta.connectorUrl).toBe("https://g/d/connector-detail?var-agent_type=okta");
 
     const s3 = rows.find((r) => r.integration === "s3")!;
@@ -121,6 +155,8 @@ describe("buildIntegrationHealth", () => {
     // alert warning + error_count>0 breach (default threshold) => warning
     expect(s3.severity).toBe("warning");
     expect(s3.extractionErrors).toBe(3);
+    expect(s3.state).toBe("failing"); // has extraction errors
+    expect(s3.parsingNow).toBe(true); // in parsingNowTypes
 
     // warning (s3) sorts before ok (okta)
     expect(rows.findIndex((r) => r.integration === "s3")).toBeLessThan(
@@ -138,6 +174,8 @@ describe("buildIntegrationHealth", () => {
       parseTasks: new Map(),
       outdatedByType: new Map(),
       topErrorsByType: new Map(),
+      extractingNowTypes: new Set(),
+      parsingNowTypes: new Set(),
       connectorUrl: () => null,
       alertsByIntegration: new Map(),
     });
