@@ -51,7 +51,9 @@ export function integrationState(ih: {
   const firing = ih.alerts.filter((a) => a.state === "firing");
   if (ih.extractionErrors > 0 || firing.some((a) => a.severity === "critical")) return "failing";
   if (ih.outdated > 0 || ih.alerts.some(isStuckAlert)) return "stalled";
-  if ((ih.providers ?? 0) === 0 && ih.parseTasks === 0 && firing.length === 0) return "idle";
+  // Strict `=== 0`: when providers is null (regional Loki unavailable) we DON'T
+  // know it's idle, so don't badge a possibly-extracting integration "idle".
+  if (ih.providers === 0 && ih.parseTasks === 0 && firing.length === 0) return "idle";
   return "ok";
 }
 
@@ -367,8 +369,10 @@ export async function buildTenantReport(
       const k = (r.metric.agent_type ?? "").toLowerCase(); // match lowercase inventory keys
       if (k) outdatedByType.set(k, (outdatedByType.get(k) ?? 0) + r.value);
     }
+    // >= 1: increase() extrapolation can return a small fraction at series
+    // boundaries without a real increment in the window.
     parsingNowTypes = new Set(
-      parsingNow.filter((r) => r.value > 0 && r.metric.agent_type).map((r) => r.metric.agent_type),
+      parsingNow.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),
     );
     sources.grafanaMetrics = true;
   } catch (e) {

@@ -47,7 +47,14 @@ export function errorTimelineQuery(tenant: string, bucket = "1h"): string {
   return `sum(count_over_time(${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` [${bucket}]))`;
 }
 
-/** LogQL: recent extraction-error log lines (parsed) for signature sampling. */
+/**
+ * LogQL: recent extraction-error log lines (parsed) for signature sampling.
+ * NOTE: per-integration error *counts* (errorByType) come from a full
+ * count_over_time and are exact; the *signatures* (topErrorsByType) come from a
+ * capped tenant-wide sample of recent lines, so a low-volume integration may
+ * show an error count with no signatures when noisier integrations fill the
+ * sample. Counts and signatures therefore have different completeness.
+ */
 export function errorSamplesQuery(tenant: string): string {
   return `${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` | json`;
 }
@@ -69,7 +76,7 @@ export function normalizeErrorSignature(msg: string): string {
     .replace(/\b[0-9a-f]{16,}\b/gi, "<id>") // long hex ids
     .replace(/\b\d{5,}\b/g, "<n>") // long numbers
     .replace(/\s+/g, " ")
-    .replace(/^(?:extract[:\s]+)+/i, "") // drop the leading "extract:"/"extract :" verb(s)
+    .replace(/^(?:extract[:\s]+){1,3}/i, "") // drop leading "extract:"/"extract :" verb(s); bounded
     .replace(/^[\s:]+/, "")
     .trim()
     .slice(0, 180);
@@ -241,7 +248,7 @@ export async function extractionLogStats(
       const r = await lokiCountQuery(dsUid, providersForTypeQuery(tenant, ty)).catch(() => []);
       return [ty, scalar(r) ?? 0] as const;
     }),
-    lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 300).catch(() => []),
+    lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 500).catch(() => []),
     lokiRangeQuery(dsUid, errorTimelineQuery(tenant, "1h"), startSec, nowSec, 3600).catch(() => []),
     lokiCountQuery(dsUid, recentStartByTypeQuery(tenant, "10m")).catch(() => []),
   ]);

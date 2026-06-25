@@ -106,9 +106,12 @@ describe("integrationState", () => {
       integrationState({ ...base, alerts: [alert({ severity: "warning", name: "ExtractionJobsStuckPending_Tier24" })] }),
     ).toBe("stalled");
   });
-  it("idle when no providers, no parse tasks, no alerts", () => {
+  it("idle only when providers is exactly 0 (data present), no parse tasks, no alerts", () => {
     expect(integrationState({ extractionErrors: 0, outdated: 0, providers: 0, parseTasks: 0, alerts: [] })).toBe("idle");
-    expect(integrationState({ extractionErrors: 0, outdated: 0, providers: null, parseTasks: 0, alerts: [] })).toBe("idle");
+  });
+  it("is NOT idle when providers is null (regional logs unavailable) — falls back to ok", () => {
+    // null = unknown (Loki down); a possibly-extracting integration must not be badged idle.
+    expect(integrationState({ extractionErrors: 0, outdated: 0, providers: null, parseTasks: 0, alerts: [] })).toBe("ok");
   });
   it("ok when extracting cleanly", () => {
     expect(integrationState(base)).toBe("ok");

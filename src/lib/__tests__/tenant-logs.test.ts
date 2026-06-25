@@ -48,7 +48,7 @@ describe("errorByTypeQuery", () => {
   });
 });
 
-import { normalizeErrorSignature, topErrorsByType, errorTimelineQuery, errorSamplesQuery } from "@/lib/tenant-logs";
+import { normalizeErrorSignature, topErrorsByType, errorTimelineQuery, errorSamplesQuery, recentStartByTypeQuery } from "@/lib/tenant-logs";
 
 describe("normalizeErrorSignature", () => {
   it("strips the [type - uuid] prefix and ids so the same failure collapses", () => {
@@ -94,5 +94,18 @@ describe("error query builders", () => {
     expect(errorSamplesQuery("bcgprod")).toBe(
       '{namespace="bcgprod-dp"} |= `Error extracting data sources` | json',
     );
+  });
+  it("recentStartByTypeQuery counts recent START lines per datasource_type", () => {
+    expect(recentStartByTypeQuery("bcgprod", "10m")).toBe(
+      'sum by (datasource_type) (count_over_time({namespace="bcgprod-dp"} |= `START - Extracting data source` | json [10m]))',
+    );
+  });
+});
+
+describe("normalizeErrorSignature — double extract prefix", () => {
+  it("strips a repeated 'extract:' prefix (real cp log shape)", () => {
+    // real line: "extract [type - id]: extract: connect error: ..."
+    const sig = normalizeErrorSignature("extract [azure_sql - 019d3047-9b3e-7ece-8418-8b6ffd9dafc1]: extract: connect error: cannot reach host");
+    expect(sig).toBe("connect error: cannot reach host");
   });
 });
