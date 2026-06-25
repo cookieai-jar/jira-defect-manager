@@ -26,6 +26,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type {
+  ErrorReason,
   ErrorTimelinePoint,
   GraphWrite,
   IntegrationHealth,
@@ -71,6 +72,37 @@ function formatParse(ms: number | null): string {
   if (ms == null) return "—";
   if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
   return `${Math.round(ms)}ms`;
+}
+
+/** Compact human age from a seconds value: "Ns" / "Nm" / "Nh" / "Nd". */
+function formatAge(sec: number | null): string {
+  if (sec == null) return "—";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86_400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86_400)}d`;
+}
+
+/** Tone for an age value: warning past 24h, danger past 72h, else muted. */
+function ageTone(sec: number | null): "muted" | "warning" | "danger" {
+  if (sec == null) return "muted";
+  if (sec > 72 * 3600) return "danger";
+  if (sec > 24 * 3600) return "warning";
+  return "muted";
+}
+
+function ageToneClass(sec: number | null): string {
+  const t = ageTone(sec);
+  if (t === "danger") return "text-danger";
+  if (t === "warning") return "text-warning";
+  return "text-fg-subtle";
+}
+
+/** Tone for an error-reason class badge: user=warning, internal=danger, unknown=muted. */
+function errorClassBadgeClass(errorClass: ErrorReason["errorClass"]): string {
+  if (errorClass === "internal") return "border-danger/40 bg-danger/10 text-danger";
+  if (errorClass === "user") return "border-warning/40 bg-warning/10 text-warning";
+  return "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted";
 }
 
 const SOURCE_LABELS: Record<keyof TenantHealthReport["sources"], string> = {
@@ -284,6 +316,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             />
           </div>
 
+          {/* 3a. Failures by who acts — the key triage axis */}
+          <ErrorClassCard errorClass={report.errorClass} />
+
+          {/* 3a-ii. Top error reasons — what's failing & who owns it */}
+          <TopErrorReasonsCard reasons={report.topErrorReasons} />
+
           {/* 3b. Live activity — what's running right now */}
           <LiveActivityCard
             extracting={liveActivity.extracting}
@@ -330,7 +368,10 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                         <th className="text-left font-medium px-4 py-2">Integration</th>
                         <th className="text-left font-medium px-3 py-2">State</th>
                         <th className="text-right font-medium px-3 py-2">Providers</th>
-                        <th className="text-right font-medium px-3 py-2">Lag</th>
+                        <th className="text-right font-medium px-3 py-2" title="Outdated datasources">Lag</th>
+                        <th className="text-right font-medium px-3 py-2" title="Datasources currently failing extraction">Failing</th>
+                        <th className="text-right font-medium px-3 py-2" title="Time since last successful parse">Freshness</th>
+                        <th className="text-right font-medium px-3 py-2" title="Oldest pending extract job">Pending</th>
                         <th className="text-right font-medium px-3 py-2">Errors</th>
                         <th className="text-right font-medium px-3 py-2">Parse avg</th>
                         <th className="text-right font-medium px-3 py-2">Parse tasks</th>
@@ -363,15 +404,16 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             </CardBody>
           </Card>
 
-          {/* 6 + 7 side by side */}
+          {/* 6 + 6b side by side: graph writes (throughput) + graph size (totals) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
-            {/* 6. Graph writes */}
+            {/* 6. Graph writes — throughput */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Network className="h-4 w-4 text-accent" /> Graph writes (last{" "}
                   {report.windowHours}h)
                 </CardTitle>
+                <span className="text-[11px] text-fg-subtle">throughput</span>
               </CardHeader>
               <CardBody className="space-y-1.5">
                 {report.graphWrites.length === 0 ? (
@@ -385,6 +427,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               </CardBody>
             </Card>
 
+            {/* 6b. Graph size — totals */}
+            <GraphSizeCard graphSize={report.graphSize} />
+          </div>
+
+          {/* 7. Known vs unknown errors */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             {/* 7. Known vs unknown errors */}
             <Card>
               <CardHeader>
@@ -534,23 +582,51 @@ function LiveActivityGroup({
 }
 
 function IntegrationRow({ it }: { it: IntegrationHealth }) {
+  const topReasons = (it.topReasons ?? []).slice(0, 2);
   const topErrors = it.topErrors.slice(0, 2);
   return (
     <tr className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors align-top">
       <td className="px-4 py-1.5 font-medium text-fg">
         <div>{it.integration}</div>
-        {topErrors.length > 0 && (
+        {topReasons.length > 0 ? (
           <div className="mt-0.5 space-y-0.5">
-            {topErrors.map((e, i) => (
+            {topReasons.map((r, i) => (
               <div
                 key={i}
-                className="max-w-[22rem] truncate text-[11px] font-normal text-danger/80"
-                title={`${e.signature} ×${e.count.toLocaleString()}`}
+                className="max-w-[24rem] truncate text-[11px] font-normal"
+                title={`${r.reason} (${r.errorClass}) ×${r.count.toLocaleString()}`}
               >
-                {e.signature} <span className="text-fg-subtle">×{e.count.toLocaleString()}</span>
+                <span className="font-mono text-fg-muted">{r.reason}</span>{" "}
+                <span
+                  className={cn(
+                    "font-medium",
+                    r.errorClass === "internal"
+                      ? "text-danger"
+                      : r.errorClass === "user"
+                        ? "text-warning"
+                        : "text-fg-subtle",
+                  )}
+                >
+                  ({r.errorClass})
+                </span>{" "}
+                <span className="text-fg-subtle">×{r.count.toLocaleString()}</span>
               </div>
             ))}
           </div>
+        ) : (
+          topErrors.length > 0 && (
+            <div className="mt-0.5 space-y-0.5">
+              {topErrors.map((e, i) => (
+                <div
+                  key={i}
+                  className="max-w-[22rem] truncate text-[11px] font-normal text-danger/80"
+                  title={`${e.signature} ×${e.count.toLocaleString()}`}
+                >
+                  {e.signature} <span className="text-fg-subtle">×{e.count.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          )
         )}
       </td>
       <td className="px-3 py-1.5">
@@ -592,6 +668,39 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
         ) : (
           <span className="font-mono text-fg-subtle">0</span>
         )}
+      </td>
+      <td className="px-3 py-1.5 text-right">
+        {it.failing > 0 ? (
+          <span
+            className="inline-flex items-center gap-1 font-mono text-danger"
+            title={`${it.failing.toLocaleString()} datasource(s) currently failing extraction`}
+          >
+            <TriangleAlert className="h-3 w-3" />
+            {it.failing.toLocaleString()}
+          </span>
+        ) : (
+          <span className="font-mono text-fg-subtle">0</span>
+        )}
+      </td>
+      <td
+        className={cn("px-3 py-1.5 text-right font-mono", ageToneClass(it.freshnessSec))}
+        title={
+          it.freshnessSec == null
+            ? "No successful parse recorded"
+            : `${formatAge(it.freshnessSec)} since last successful parse`
+        }
+      >
+        {formatAge(it.freshnessSec)}
+      </td>
+      <td
+        className={cn("px-3 py-1.5 text-right font-mono", ageToneClass(it.lagSec))}
+        title={
+          it.lagSec == null
+            ? "No pending extracts"
+            : `oldest pending extract: ${formatAge(it.lagSec)}`
+        }
+      >
+        {formatAge(it.lagSec)}
       </td>
       <td
         className={cn(
@@ -637,6 +746,165 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
         )}
       </td>
     </tr>
+  );
+}
+
+function ErrorClassCard({
+  errorClass,
+}: {
+  errorClass: TenantHealthReport["errorClass"];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <TriangleAlert className="h-4 w-4 text-warning" /> Failures by who acts
+        </CardTitle>
+      </CardHeader>
+      <CardBody>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded border border-warning/30 bg-warning/5 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-fg-muted">User</div>
+            <div className="mt-1.5 text-3xl font-bold tabular-nums text-warning">
+              {errorClass.user.toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-[10px] text-fg-subtle">customer-side</div>
+          </div>
+          <div className="rounded border border-danger/30 bg-danger/5 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-fg-muted">Internal</div>
+            <div className="mt-1.5 text-3xl font-bold tabular-nums text-danger">
+              {errorClass.internal.toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-[10px] text-fg-subtle">Veza-side</div>
+          </div>
+        </div>
+        <p className="pt-2 text-[11px] text-fg-subtle">
+          user = customer fixes (perms/creds/network); internal = Veza bug/infra
+        </p>
+      </CardBody>
+    </Card>
+  );
+}
+
+function TopErrorReasonsCard({ reasons }: { reasons: ErrorReason[] }) {
+  const rows = reasons ?? [];
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-danger" /> Top error reasons
+        </CardTitle>
+        <span className="text-[11px] text-fg-subtle">what&apos;s failing &amp; who owns it</span>
+      </CardHeader>
+      <CardBody className="px-0 py-0">
+        {rows.length === 0 ? (
+          <p className="text-sm text-fg-muted px-4 py-6 text-center">No classified error reasons.</p>
+        ) : (
+          <div className="max-h-[24rem] overflow-auto scroll-thin">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-bg-card z-10">
+                <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
+                  <th className="text-left font-medium px-4 py-2">Integration</th>
+                  <th className="text-left font-medium px-3 py-2">Class</th>
+                  <th className="text-left font-medium px-3 py-2">Reason</th>
+                  <th className="text-right font-medium px-4 py-2">Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr
+                    key={`${r.integration ?? ""}-${r.reason}-${i}`}
+                    className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors"
+                  >
+                    <td className="px-4 py-1.5 font-mono text-fg-muted">{r.integration ?? "—"}</td>
+                    <td className="px-3 py-1.5">
+                      <Badge className={cn("border", errorClassBadgeClass(r.errorClass))}>
+                        {r.errorClass}
+                      </Badge>
+                    </td>
+                    <td
+                      className="px-3 py-1.5 font-mono text-fg max-w-[28rem] truncate"
+                      title={r.reason}
+                    >
+                      {r.reason}
+                    </td>
+                    <td className="px-4 py-1.5 text-right font-mono text-fg">
+                      {r.count.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function GraphSizeCard({
+  graphSize,
+}: {
+  graphSize: TenantHealthReport["graphSize"];
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Network className="h-4 w-4 text-accent" /> Graph size
+        </CardTitle>
+        <span className="text-[11px] text-fg-subtle">totals</span>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-fg-muted">Nodes</div>
+            <div className="mt-1.5 text-2xl font-semibold text-fg tabular-nums">
+              {graphSize.nodes == null ? "—" : graphSize.nodes.toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-fg-muted">Edges</div>
+            <div className="mt-1.5 text-2xl font-semibold text-fg tabular-nums">
+              {graphSize.edges == null ? "—" : graphSize.edges.toLocaleString()}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <GraphTypeList label="Top node types" types={graphSize.topNodeTypes} />
+          <GraphTypeList label="Top edge types" types={graphSize.topEdgeTypes} />
+        </div>
+        <p className="text-[11px] text-fg-subtle">absolute graph size, not write volume</p>
+      </CardBody>
+    </Card>
+  );
+}
+
+function GraphTypeList({
+  label,
+  types,
+}: {
+  label: string;
+  types: { type: string; count: number }[];
+}) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-fg-subtle mb-1">{label}</div>
+      {types.length === 0 ? (
+        <p className="text-[11px] text-fg-muted">—</p>
+      ) : (
+        <ul className="space-y-0.5">
+          {types.map((t, i) => (
+            <li key={`${t.type}-${i}`} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="font-mono text-fg-muted truncate" title={t.type}>
+                {t.type}
+              </span>
+              <span className="font-mono text-fg shrink-0">{t.count.toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

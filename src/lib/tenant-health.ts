@@ -2,7 +2,9 @@ import { queryInstant, fetchActiveAlerts, parseTenantAlerts, parseAlertsByTenant
 import { searchIssues } from "@/lib/jira";
 import { DEFAULT_THRESHOLDS, evaluateMetrics } from "@/lib/tenant-thresholds";
 import type {
+  ErrorReason,
   ErrorSignature,
+  GraphTypeCount,
   FleetReport,
   FleetTenantSummary,
   GraphWrite,
@@ -55,6 +57,63 @@ export function integrationState(ih: {
   // know it's idle, so don't badge a possibly-extracting integration "idle".
   if (ih.providers === 0 && ih.parseTasks === 0 && firing.length === 0) return "idle";
   return "ok";
+}
+
+/** Normalize the metric `class` label to our error class. */
+function normErrorClass(c: string | undefined): "internal" | "user" | "unknown" {
+  return c === "internal" || c === "user" ? c : "unknown";
+}
+
+export interface ErrorReasonAggregate {
+  /** Top error_reasons per integration (agent_type), most frequent first. */
+  byIntegration: Map<string, ErrorReason[]>;
+  /** Total failing-datasource count per integration. */
+  failingByType: Map<string, number>;
+  /** Tenant-level split by who acts on the failure. */
+  errorClass: { internal: number; user: number };
+  /** Tenant-level top error_reasons (with integration), most frequent first. */
+  topErrorReasons: ErrorReason[];
+}
+
+/**
+ * PURE. Aggregate `cookie_platform_scheduling_error_reasons` rows
+ * (sum by agent_type, class, error_reason) into per-integration top reasons,
+ * per-integration failing totals, the internal/user split, and a tenant-wide
+ * top-reasons list. Rows with non-positive counts are dropped.
+ */
+export function aggregateErrorReasons(
+  rows: Array<{ metric: Record<string, string>; value: number }>,
+  perIntegration = 3,
+  topN = 8,
+): ErrorReasonAggregate {
+  const all: ErrorReason[] = [];
+  for (const r of rows) {
+    const count = Math.round(r.value);
+    if (count <= 0) continue;
+    all.push({
+      reason: r.metric.error_reason || "UNKNOWN",
+      errorClass: normErrorClass(r.metric.class),
+      count,
+      integration: r.metric.agent_type || undefined,
+    });
+  }
+  const byInt = new Map<string, ErrorReason[]>();
+  const failingByType = new Map<string, number>();
+  const errorClass = { internal: 0, user: 0 };
+  for (const e of all) {
+    if (e.errorClass === "internal") errorClass.internal += e.count;
+    else if (e.errorClass === "user") errorClass.user += e.count;
+    if (!e.integration) continue;
+    failingByType.set(e.integration, (failingByType.get(e.integration) ?? 0) + e.count);
+    const list = byInt.get(e.integration) ?? [];
+    list.push({ reason: e.reason, errorClass: e.errorClass, count: e.count });
+    byInt.set(e.integration, list);
+  }
+  const sortDesc = (a: ErrorReason, b: ErrorReason) => b.count - a.count || a.reason.localeCompare(b.reason);
+  const byIntegration = new Map<string, ErrorReason[]>();
+  for (const [k, v] of byInt) byIntegration.set(k, [...v].sort(sortDesc).slice(0, perIntegration));
+  const topErrorReasons = [...all].sort(sortDesc).slice(0, topN);
+  return { byIntegration, failingByType, errorClass, topErrorReasons };
 }
 
 /** Worst severity in a set (critical > warning > ok). */
@@ -225,10 +284,18 @@ interface IntegrationInputs {
   outdatedByType: Map<string, number>;
   /** Top error signatures per integration. */
   topErrorsByType: Map<string, ErrorSignature[]>;
-  /** Integration types extracting right now (recent START activity). */
+  /** Integration types extracting right now (in-progress extract queue). */
   extractingNowTypes: Set<string>;
   /** Integration types parsing right now (recent parser task activity). */
   parsingNowTypes: Set<string>;
+  /** Currently-failing-datasource count per integration (scheduling_error_reasons gauge). */
+  failingByType: Map<string, number>;
+  /** Top error_reasons per integration. */
+  topReasonsByType: Map<string, ErrorReason[]>;
+  /** Seconds since last successful parse per integration. */
+  freshnessByType: Map<string, number>;
+  /** Oldest pending extract-job age (seconds) per integration. */
+  lagByType: Map<string, number>;
   /** Builds the per-connector drill-down URL for an integration (null when unconfigured). */
   connectorUrl: (integration: string) => string | null;
 }
@@ -273,7 +340,14 @@ export function buildIntegrationHealth(
     ]);
     const outdated = Math.round(inputs.outdatedByType.get(integration) ?? 0);
     const topErrors = inputs.topErrorsByType.get(integration) ?? [];
-    const state = integrationState({ extractionErrors, outdated, providers, parseTasks, alerts });
+    const failing = Math.round(inputs.failingByType.get(integration) ?? 0);
+    const topReasons = inputs.topReasonsByType.get(integration) ?? [];
+    const freshnessSec = inputs.freshnessByType.has(integration)
+      ? Math.round(inputs.freshnessByType.get(integration)!)
+      : null;
+    const lagSec = inputs.lagByType.has(integration) ? Math.round(inputs.lagByType.get(integration)!) : null;
+    // state reflects the authoritative failing-datasource gauge as well as Loki errors.
+    const state = integrationState({ extractionErrors: extractionErrors + failing, outdated, providers, parseTasks, alerts });
     return {
       integration,
       providers,
@@ -284,6 +358,10 @@ export function buildIntegrationHealth(
       extractingNow: inputs.extractingNowTypes.has(integration),
       parsingNow: inputs.parsingNowTypes.has(integration),
       outdated,
+      failing,
+      freshnessSec,
+      lagSec,
+      topReasons,
       topErrors,
       connectorUrl: inputs.connectorUrl(integration),
       alerts,
@@ -327,6 +405,7 @@ export async function buildTenantReport(
   const windowHours = opts.windowHours ?? 24;
   const w = `${windowHours}h`;
   const sel = `{tenant_id="${tenant}"}`;
+  const selBare = `tenant_id="${tenant}"`; // for queries that add other label matchers
   const customers = await fetchCustomerNames();
   const displayName = resolveDisplayName(tenant, customers);
 
@@ -345,8 +424,18 @@ export async function buildTenantReport(
   let parsingNowTypes = new Set<string>();
   let cluster: string | null = null;
   let namespace: string | null = null;
+  let errAgg: ReturnType<typeof aggregateErrorReasons> | null = null;
+  let freshnessByType = new Map<string, number>();
+  let lagByType = new Map<string, number>();
+  let extractingNowTypes = new Set<string>();
+  let graphSize: TenantHealthReport["graphSize"] = {
+    nodes: null,
+    edges: null,
+    topNodeTypes: [],
+    topEdgeTypes: [],
+  };
   try {
-    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow, uptime] = await Promise.all([
+    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow, uptime, errReasons, freshness, lag, queueExtract, neoNodes, neoEdges, neoNodeType, neoEdgeType] = await Promise.all([
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_errors_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_duration_ms_total${sel}[${w}]))`),
@@ -360,6 +449,19 @@ export async function buildTenantReport(
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_total${sel}[10m]))`),
       // label-bearing series for tenant config (cluster/namespace).
       queryInstant(`veza_platform_parser_uptime_ms${sel}`),
+      // authoritative failures: currently-failing datasources by class + error_reason.
+      queryInstant(`sum by (agent_type, class, error_reason) (cookie_platform_scheduling_error_reasons{stage="extract", ${selBare}})`),
+      // freshness: seconds since last successful parse, per integration.
+      queryInstant(`time() - max by (agent_type) (cookie_platform_scheduling_parsed_at_success_ms_max${sel}) / 1000`),
+      // lag: oldest pending extract job age (seconds), per integration.
+      queryInstant(`time() - max by (agent_type) (cookie_platform_scheduling_extract_jobs_pending_oldest_time_ms${sel}) / 1000`),
+      // running now: in-progress extract jobs, per integration.
+      queryInstant(`sum by (agent_type) (cookie_platform_scheduling_queue_size{state="in-progress", stage="extract", ${selBare}})`),
+      // true graph size (per tenant).
+      queryInstant(`sum(neo4j_node_count${sel})`),
+      queryInstant(`sum(neo4j_edge_count${sel})`),
+      queryInstant(`topk(12, sum by (node_type) (neo4j_node_count${sel}))`),
+      queryInstant(`topk(12, sum by (edge_type) (neo4j_edge_count${sel}))`),
     ]);
     inventory = [...byLabel(ext, "agent_type").keys()];
     extractionErrors = byLabel(err, "agent_type");
@@ -384,6 +486,25 @@ export async function buildTenantReport(
     const liveUptime = [...uptime].sort((a, b) => b.value - a.value)[0];
     cluster = liveUptime?.metric.cluster ?? liveUptime?.metric.k8s_cluster_name ?? null;
     namespace = `${tenant}-cp`;
+
+    // Authoritative failures (scheduling_error_reasons gauge): class + error_reason.
+    errAgg = aggregateErrorReasons(errReasons);
+    for (const r of freshness) if (r.metric.agent_type && Number.isFinite(r.value)) freshnessByType.set(r.metric.agent_type, r.value);
+    for (const r of lag) if (r.metric.agent_type && Number.isFinite(r.value)) lagByType.set(r.metric.agent_type, r.value);
+    // running now: in-progress extract queue (replaces the Loki START approximation).
+    extractingNowTypes = new Set(
+      queueExtract.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),
+    );
+    graphSize = {
+      nodes: neoNodes.length > 0 ? Math.round(neoNodes[0].value) : null,
+      edges: neoEdges.length > 0 ? Math.round(neoEdges[0].value) : null,
+      topNodeTypes: neoNodeType
+        .map((r) => ({ type: r.metric.node_type ?? "?", count: Math.round(r.value) }))
+        .sort((a, b) => b.count - a.count),
+      topEdgeTypes: neoEdgeType
+        .map((r) => ({ type: r.metric.edge_type ?? "?", count: Math.round(r.value) }))
+        .sort((a, b) => b.count - a.count),
+    };
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn(`[tenant-health] metrics query failed for ${tenant}:`, e instanceof Error ? e.message : e);
@@ -413,7 +534,6 @@ export async function buildTenantReport(
   let hasProviderData = false;
   let topErrorsByType = new Map<string, ErrorSignature[]>();
   let errorTimeline: TenantHealthReport["errorTimeline"] = [];
-  let extractingNowTypes = new Set<string>();
   let region: string | null = null;
   let featureFlags: TenantHealthReport["featureFlags"] = null;
   let dataPlane = { insightPointVersion: null as string | null, edpId: null as string | null };
@@ -426,7 +546,6 @@ export async function buildTenantReport(
       if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
       topErrorsByType = logs.topErrorsByType;
       errorTimeline = logs.errorTimeline;
-      extractingNowTypes = logs.extractingNowTypes;
       region = logs.region;
       featureFlags = logs.featureFlags;
       dataPlane = logs.dataPlane;
@@ -449,6 +568,10 @@ export async function buildTenantReport(
     topErrorsByType,
     extractingNowTypes,
     parsingNowTypes,
+    failingByType: errAgg?.failingByType ?? new Map(),
+    topReasonsByType: errAgg?.byIntegration ?? new Map(),
+    freshnessByType,
+    lagByType,
     connectorUrl: (integration) => connectorDetailUrl(grafanaBase, tenant, integration),
   });
 
@@ -479,6 +602,9 @@ export async function buildTenantReport(
     windowHours,
     integrations,
     graphWrites,
+    graphSize,
+    errorClass: errAgg?.errorClass ?? { internal: 0, user: 0 },
+    topErrorReasons: errAgg?.topErrorReasons ?? [],
     errorTimeline,
     config: {
       cluster,

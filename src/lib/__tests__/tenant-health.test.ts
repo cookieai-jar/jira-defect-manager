@@ -57,8 +57,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
     expect(
@@ -75,7 +75,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -135,6 +135,10 @@ describe("buildIntegrationHealth", () => {
       topErrorsByType: new Map([["s3", [{ signature: "connect error", count: 14 }]]]),
       extractingNowTypes: new Set(["okta"]),
       parsingNowTypes: new Set(["s3"]),
+      failingByType: new Map([["s3", 5]]),
+      topReasonsByType: new Map([["s3", [{ reason: "EXTRACTION_PERMISSION_DENIED", errorClass: "user" as const, count: 5 }]]]),
+      freshnessByType: new Map([["okta", 3600]]),
+      lagByType: new Map([["s3", 7200]]),
       connectorUrl: (i) => `https://g/d/connector-detail?var-agent_type=${i}`,
     });
     const names = rows.map((r) => r.integration);
@@ -152,8 +156,12 @@ describe("buildIntegrationHealth", () => {
     expect(okta.parsingNow).toBe(false);
     expect(okta.connectorUrl).toBe("https://g/d/connector-detail?var-agent_type=okta");
 
+    expect(okta.freshnessSec).toBe(3600); // last parse success 1h ago
     const s3 = rows.find((r) => r.integration === "s3")!;
     expect(s3.outdated).toBe(7); // extraction lag
+    expect(s3.failing).toBe(5); // currently-failing datasources (gauge)
+    expect(s3.lagSec).toBe(7200);
+    expect(s3.topReasons).toEqual([{ reason: "EXTRACTION_PERMISSION_DENIED", errorClass: "user", count: 5 }]);
     expect(s3.topErrors).toEqual([{ signature: "connect error", count: 14 }]);
     // alert warning + error_count>0 breach (default threshold) => warning
     expect(s3.severity).toBe("warning");
@@ -179,11 +187,53 @@ describe("buildIntegrationHealth", () => {
       topErrorsByType: new Map(),
       extractingNowTypes: new Set(),
       parsingNowTypes: new Set(),
+      failingByType: new Map(),
+      topReasonsByType: new Map(),
+      freshnessByType: new Map(),
+      lagByType: new Map(),
       connectorUrl: () => null,
       alertsByIntegration: new Map(),
     });
     expect(rows[0].providers).toBeNull();
     expect(rows[0].parseAvgMs).toBeNull();
+    expect(rows[0].failing).toBe(0);
+    expect(rows[0].freshnessSec).toBeNull();
+  });
+});
+
+import { aggregateErrorReasons } from "@/lib/tenant-health";
+
+describe("aggregateErrorReasons", () => {
+  const rows = [
+    { metric: { agent_type: "awslambda", class: "user", error_reason: "EXTRACTION_PERMISSION_DENIED" }, value: 386 },
+    { metric: { agent_type: "awslambda", class: "user", error_reason: "AUTH_AWS_IAM_NOT_ENABLED" }, value: 12 },
+    { metric: { agent_type: "okta", class: "internal", error_reason: "INTERNAL" }, value: 4 },
+    { metric: { agent_type: "s3", class: "", error_reason: "" }, value: 3 }, // unknown class + reason
+    { metric: { agent_type: "ec2", class: "user", error_reason: "X" }, value: 0 }, // dropped (0)
+  ];
+  it("splits internal vs user and tallies failing per integration", () => {
+    const a = aggregateErrorReasons(rows);
+    expect(a.errorClass).toEqual({ internal: 4, user: 398 });
+    expect(a.failingByType.get("awslambda")).toBe(398);
+    expect(a.failingByType.get("ec2")).toBeUndefined(); // 0 dropped
+  });
+  it("returns top reasons per integration, most frequent first, with class", () => {
+    const a = aggregateErrorReasons(rows, 3);
+    expect(a.byIntegration.get("awslambda")).toEqual([
+      { reason: "EXTRACTION_PERMISSION_DENIED", errorClass: "user", count: 386 },
+      { reason: "AUTH_AWS_IAM_NOT_ENABLED", errorClass: "user", count: 12 },
+    ]);
+    expect(a.byIntegration.get("s3")![0]).toEqual({ reason: "UNKNOWN", errorClass: "unknown", count: 3 });
+  });
+  it("builds a tenant-wide top-reasons list with integration", () => {
+    const a = aggregateErrorReasons(rows, 3, 2);
+    expect(a.topErrorReasons).toHaveLength(2);
+    expect(a.topErrorReasons[0]).toEqual({
+      reason: "EXTRACTION_PERMISSION_DENIED",
+      errorClass: "user",
+      count: 386,
+      integration: "awslambda",
+    });
   });
 });
 

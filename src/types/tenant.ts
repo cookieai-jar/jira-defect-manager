@@ -146,7 +146,15 @@ export interface IntegrationHealth {
   parsingNow: boolean;
   /** Datasources flagged outdated — the extraction-lag/freshness signal. */
   outdated: number;
-  /** Top recurring error signatures for this integration (most frequent first). */
+  /** Datasources currently failing extraction (cookie_platform_scheduling_error_reasons gauge). */
+  failing: number;
+  /** Seconds since the last successful parse for this integration (staleness); null if unknown. */
+  freshnessSec: number | null;
+  /** Seconds the oldest pending extract job has waited (backlog/lag); null if none pending. */
+  lagSec: number | null;
+  /** Top error_reasons (with internal/user class) for this integration, most frequent first. */
+  topReasons: ErrorReason[];
+  /** Top recurring error signatures for this integration (most frequent first; Loki-derived, legacy). */
   topErrors: ErrorSignature[];
   /** Deep link to the per-connector Grafana dashboard, or null when unconfigured. */
   connectorUrl: string | null;
@@ -156,9 +164,29 @@ export interface IntegrationHealth {
   severity: Severity;
 }
 
-/** A normalized error message + how many times it occurred in the window. */
+/** A normalized error message + how many times it occurred in the window (Loki-derived; legacy). */
 export interface ErrorSignature {
   signature: string;
+  count: number;
+}
+
+/**
+ * A failure grouped by JIRA-grade error_reason + who acts on it. From the
+ * authoritative `cookie_platform_scheduling_error_reasons` gauge — `class`
+ * "internal" (Veza-side) vs "user" (customer-side) is the key triage axis.
+ */
+export interface ErrorReason {
+  reason: string;
+  errorClass: "internal" | "user" | "unknown";
+  /** Count of datasources currently in this failure state. */
+  count: number;
+  /** agent_type, when this is a tenant-level (cross-integration) entry. */
+  integration?: string;
+}
+
+/** A graph node/edge type with its count. */
+export interface GraphTypeCount {
+  type: string;
   count: number;
 }
 
@@ -269,6 +297,17 @@ export interface TenantHealthReport {
   integrations: IntegrationHealth[];
   /** Tenant-level graph write volume over the window. */
   graphWrites: GraphWrite[];
+  /** True graph size (neo4j_node_count/edge_count) + top types. */
+  graphSize: {
+    nodes: number | null;
+    edges: number | null;
+    topNodeTypes: GraphTypeCount[];
+    topEdgeTypes: GraphTypeCount[];
+  };
+  /** Tenant-level error split by who acts on it (the key triage axis). */
+  errorClass: { internal: number; user: number };
+  /** Tenant-level top error_reasons across integrations, most frequent first. */
+  topErrorReasons: ErrorReason[];
   /** Tenant-level extraction-error counts over time, for the timeline chart. */
   errorTimeline: ErrorTimelinePoint[];
   /** Basic tenant config (cluster/region/version), from labels + logs. */
