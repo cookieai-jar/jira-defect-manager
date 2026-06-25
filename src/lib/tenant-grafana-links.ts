@@ -35,3 +35,39 @@ export function tenantHealthDashboardUrl(base: string | null | undefined): strin
   const b = trimBase(base);
   return b ? `${b}/d/${TENANT_HEALTH_DASHBOARD}` : null;
 }
+
+/**
+ * Deep link into Grafana Explore on the tenant's regional Loki, showing the
+ * extraction-error log stream so a developer can read the actual failures.
+ * Scoped to one integration (datasource_type) when given, else tenant-wide.
+ * Returns null without a base or datasource uid (regional Loki not located).
+ *
+ * NOTE: logs carry `datasource_type` but NOT the user/internal `class` — that
+ * lives only in the scheduling metric — so links filter by integration, the
+ * one join key present in both.
+ */
+export function lokiErrorLogsUrl(
+  base: string | null | undefined,
+  dsUid: string | null | undefined,
+  tenant: string,
+  integration?: string | null,
+  fromHours = 24,
+): string | null {
+  const b = trimBase(base);
+  if (!b || !dsUid) return null;
+  let expr = `{namespace="${tenant}-dp"} |= \`Error extracting data sources\` | json`;
+  if (integration) expr += ` | datasource_type=\`${integration}\``;
+  const panes = {
+    err: {
+      datasource: dsUid,
+      queries: [{ refId: "A", expr, datasource: { type: "loki", uid: dsUid } }],
+      range: { from: `now-${fromHours}h`, to: "now" },
+    },
+  };
+  const params = new URLSearchParams({
+    schemaVersion: "1",
+    panes: JSON.stringify(panes),
+    orgId: "1",
+  });
+  return `${b}/explore?${params.toString()}`;
+}

@@ -244,6 +244,14 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
 const _dsCache = new Map<string, LokiDatasource | null>();
 
 /**
+ * Lookback for the discovery probe. Must exceed the slowest tenant's extraction
+ * cadence: a 6h window silently misses tenants that extract less often (e.g.
+ * bcgprod runs >6h apart), disabling ALL Loki features for them. 72h covers
+ * daily/weekend-gap cadences; the probe is a cheap limit=1 existence check.
+ */
+const DISCOVERY_PROBE_HOURS = 72;
+
+/**
  * Find the Loki datasource that holds this tenant's data-plane extraction logs,
  * probing regional datasources in parallel. Cached per tenant (incl. a null
  * "not found" so we don't re-probe every load).
@@ -255,7 +263,7 @@ export async function findTenantLogDatasourceInfo(tenant: string): Promise<LokiD
     const datasources = await listLokiDatasources();
     const probe = extractionProbeSelector(tenant);
     const hits = await Promise.all(
-      datasources.map(async (d) => ((await lokiStreamExists(d.uid, probe).catch(() => false)) ? d : null)),
+      datasources.map(async (d) => ((await lokiStreamExists(d.uid, probe, DISCOVERY_PROBE_HOURS).catch(() => false)) ? d : null)),
     );
     ds = hits.find((d): d is LokiDatasource => d !== null) ?? null;
   } catch {

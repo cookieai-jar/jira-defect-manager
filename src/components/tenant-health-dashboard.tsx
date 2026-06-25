@@ -21,6 +21,7 @@ import {
   Network,
   PlugZap,
   RefreshCw,
+  ScrollText,
   Server,
   Ticket,
   TriangleAlert,
@@ -103,6 +104,12 @@ function errorClassBadgeClass(errorClass: ErrorReason["errorClass"]): string {
   if (errorClass === "internal") return "border-danger/40 bg-danger/10 text-danger";
   if (errorClass === "user") return "border-warning/40 bg-warning/10 text-warning";
   return "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted";
+}
+
+/** Human label for an error class — "internal" reads as "product" (Veza-side) to users. */
+function classLabel(errorClass: ErrorReason["errorClass"]): string {
+  if (errorClass === "internal") return "product";
+  return errorClass; // "user" | "unknown"
 }
 
 const SOURCE_LABELS: Record<keyof TenantHealthReport["sources"], string> = {
@@ -316,11 +323,11 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             />
           </div>
 
-          {/* 3a. Failures by who acts — the key triage axis */}
-          <ErrorClassCard errorClass={report.errorClass} />
+          {/* 3a. Error classification — who fixes it (the key triage axis) */}
+          <ErrorClassCard errorClass={report.errorClass} errorLogsUrl={report.errorLogsUrl} />
 
           {/* 3a-ii. Top error reasons — what's failing & who owns it */}
-          <TopErrorReasonsCard reasons={report.topErrorReasons} />
+          <TopErrorReasonsCard reasons={report.topErrorReasons} errorLogsUrl={report.errorLogsUrl} />
 
           {/* 3b. Live activity — what's running right now */}
           <LiveActivityCard
@@ -404,59 +411,60 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             </CardBody>
           </Card>
 
-          {/* 6 + 6b side by side: graph writes (throughput) + graph size (totals) */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
-            {/* 6. Graph writes — throughput */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Network className="h-4 w-4 text-accent" /> Graph writes (last{" "}
-                  {report.windowHours}h)
-                </CardTitle>
-                <span className="text-[11px] text-fg-subtle">throughput</span>
-              </CardHeader>
-              <CardBody className="space-y-1.5">
-                {report.graphWrites.length === 0 ? (
-                  <p className="text-sm text-fg-muted">No graph writes in window.</p>
-                ) : (
-                  report.graphWrites.map((w, i) => <GraphWriteRow key={i} write={w} />)
-                )}
-                <p className="pt-1 text-[11px] text-fg-subtle">
-                  write volume, not absolute graph size
-                </p>
-              </CardBody>
-            </Card>
+          {/* 6 / 6b / 7: graph writes + error classification stacked left, graph size spanning right */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
+            {/* left column: graph writes (throughput) stacked over error classification */}
+            <div className="flex flex-col gap-3">
+              {/* 6. Graph writes — throughput */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Network className="h-4 w-4 text-accent" /> Graph writes (last{" "}
+                    {report.windowHours}h)
+                  </CardTitle>
+                  <span className="text-[11px] text-fg-subtle">throughput</span>
+                </CardHeader>
+                <CardBody className="space-y-1.5">
+                  {report.graphWrites.length === 0 ? (
+                    <p className="text-sm text-fg-muted">No graph writes in window.</p>
+                  ) : (
+                    report.graphWrites.map((w, i) => <GraphWriteRow key={i} write={w} />)
+                  )}
+                  <p className="pt-1 text-[11px] text-fg-subtle">
+                    write volume, not absolute graph size
+                  </p>
+                </CardBody>
+              </Card>
 
-            {/* 6b. Graph size — totals */}
+              {/* 7. Known vs unknown alerts (alert taxonomy, distinct from the metric class split above) */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-warning" /> Known vs unknown alerts
+                  </CardTitle>
+                  <span className="text-[11px] text-fg-subtle">recognized vs unclassified firing alerts</span>
+                </CardHeader>
+                <CardBody>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-fg-muted">Known</div>
+                      <div className="mt-1.5 text-2xl font-semibold text-fg">
+                        {report.errorClassification.known.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-fg-muted">Unknown</div>
+                      <div className="mt-1.5 text-2xl font-semibold text-warning">
+                        {report.errorClassification.unknown.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                </CardBody>
+              </Card>
+            </div>
+
+            {/* 6b. Graph size — totals (spans the height of both left cards) */}
             <GraphSizeCard graphSize={report.graphSize} />
-          </div>
-
-          {/* 7. Known vs unknown errors */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
-            {/* 7. Known vs unknown errors */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 text-warning" /> Error classification
-                </CardTitle>
-              </CardHeader>
-              <CardBody>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
-                    <div className="text-[11px] uppercase tracking-wide text-fg-muted">Known</div>
-                    <div className="mt-1.5 text-2xl font-semibold text-fg">
-                      {report.errorClassification.known.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="rounded border border-border bg-bg-muted/30 px-4 py-3">
-                    <div className="text-[11px] uppercase tracking-wide text-fg-muted">Unknown</div>
-                    <div className="mt-1.5 text-2xl font-semibold text-warning">
-                      {report.errorClassification.unknown.toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              </CardBody>
-            </Card>
           </div>
 
           {/* 7b + 7c side by side: tenant config + dynamic feature flags */}
@@ -732,69 +740,112 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
         </Badge>
       </td>
       <td className="px-2 py-1.5 text-right">
-        {it.connectorUrl && (
-          <a
-            href={it.connectorUrl}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="inline-flex text-fg-subtle hover:text-accent transition-colors"
-            title="Open connector dashboard in Grafana"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        )}
+        <div className="inline-flex items-center gap-2">
+          {it.logsUrl && (it.extractionErrors > 0 || it.failing > 0) && (
+            <a
+              href={it.logsUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex text-fg-subtle hover:text-accent transition-colors"
+              title={`Open ${it.integration} error logs in Grafana`}
+            >
+              <ScrollText className="h-3.5 w-3.5" />
+            </a>
+          )}
+          {it.connectorUrl && (
+            <a
+              href={it.connectorUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex text-fg-subtle hover:text-accent transition-colors"
+              title="Open connector dashboard in Grafana"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+        </div>
       </td>
     </tr>
   );
 }
 
+/** Small "View logs ↗" link into Grafana Explore; renders nothing when no URL. */
+function LogsLink({ href, label = "View logs", className }: { href: string | null; label?: string; className?: string }) {
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title="Open these error logs in Grafana Explore"
+      className={cn(
+        "inline-flex items-center gap-1 text-[11px] text-fg-subtle hover:text-accent transition-colors",
+        className,
+      )}
+    >
+      <ScrollText className="h-3.5 w-3.5" /> {label}
+    </a>
+  );
+}
+
 function ErrorClassCard({
   errorClass,
+  errorLogsUrl,
 }: {
   errorClass: TenantHealthReport["errorClass"];
+  errorLogsUrl: string | null;
 }) {
+  const buckets = [
+    { label: "User", value: errorClass.user, hint: "customer fixes", tone: "border-warning/30 bg-warning/5", num: "text-warning" },
+    { label: "Product", value: errorClass.internal, hint: "Veza fixes", tone: "border-danger/30 bg-danger/5", num: "text-danger" },
+    { label: "Unknown", value: errorClass.unknown, hint: "needs triage", tone: "border-fg-subtle/30 bg-fg-subtle/5", num: "text-fg-muted" },
+  ];
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <TriangleAlert className="h-4 w-4 text-warning" /> Failures by who acts
-        </CardTitle>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <TriangleAlert className="h-4 w-4 text-warning" /> Error classification — who fixes it
+          </CardTitle>
+          <span className="text-[11px] text-fg-subtle">from cookie_platform_scheduling_error_reasons</span>
+        </div>
+        <LogsLink href={errorLogsUrl} label="View error logs" />
       </CardHeader>
       <CardBody>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded border border-warning/30 bg-warning/5 px-4 py-3">
-            <div className="text-[11px] uppercase tracking-wide text-fg-muted">User</div>
-            <div className="mt-1.5 text-3xl font-bold tabular-nums text-warning">
-              {errorClass.user.toLocaleString()}
+        <div className="grid grid-cols-3 gap-3">
+          {buckets.map((b) => (
+            <div key={b.label} className={cn("rounded border px-4 py-3", b.tone)}>
+              <div className="text-[11px] uppercase tracking-wide text-fg-muted">{b.label}</div>
+              <div className={cn("mt-1.5 text-3xl font-bold tabular-nums", b.num)}>
+                {b.value.toLocaleString()}
+              </div>
+              <div className="mt-0.5 text-[10px] text-fg-subtle">{b.hint}</div>
             </div>
-            <div className="mt-0.5 text-[10px] text-fg-subtle">customer-side</div>
-          </div>
-          <div className="rounded border border-danger/30 bg-danger/5 px-4 py-3">
-            <div className="text-[11px] uppercase tracking-wide text-fg-muted">Internal</div>
-            <div className="mt-1.5 text-3xl font-bold tabular-nums text-danger">
-              {errorClass.internal.toLocaleString()}
-            </div>
-            <div className="mt-0.5 text-[10px] text-fg-subtle">Veza-side</div>
-          </div>
+          ))}
         </div>
         <p className="pt-2 text-[11px] text-fg-subtle">
-          user = customer fixes (perms/creds/network); internal = Veza bug/infra
+          user = customer fixes (perms/creds/network) · product = Veza bug/infra · unknown = unclassified, needs triage
         </p>
       </CardBody>
     </Card>
   );
 }
 
-function TopErrorReasonsCard({ reasons }: { reasons: ErrorReason[] }) {
+function TopErrorReasonsCard({ reasons, errorLogsUrl }: { reasons: ErrorReason[]; errorLogsUrl: string | null }) {
   const rows = reasons ?? [];
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-danger" /> Top error reasons
-        </CardTitle>
-        <span className="text-[11px] text-fg-subtle">what&apos;s failing &amp; who owns it</span>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-danger" /> Top error reasons
+          </CardTitle>
+          <span className="text-[11px] text-fg-subtle">what&apos;s failing &amp; who owns it</span>
+        </div>
+        <LogsLink href={errorLogsUrl} label="View error logs" />
       </CardHeader>
       <CardBody className="px-0 py-0">
         {rows.length === 0 ? (
@@ -807,7 +858,8 @@ function TopErrorReasonsCard({ reasons }: { reasons: ErrorReason[] }) {
                   <th className="text-left font-medium px-4 py-2">Integration</th>
                   <th className="text-left font-medium px-3 py-2">Class</th>
                   <th className="text-left font-medium px-3 py-2">Reason</th>
-                  <th className="text-right font-medium px-4 py-2">Count</th>
+                  <th className="text-right font-medium px-3 py-2">Count</th>
+                  <th className="text-right font-medium px-4 py-2">Logs</th>
                 </tr>
               </thead>
               <tbody>
@@ -819,7 +871,7 @@ function TopErrorReasonsCard({ reasons }: { reasons: ErrorReason[] }) {
                     <td className="px-4 py-1.5 font-mono text-fg-muted">{r.integration ?? "—"}</td>
                     <td className="px-3 py-1.5">
                       <Badge className={cn("border", errorClassBadgeClass(r.errorClass))}>
-                        {r.errorClass}
+                        {classLabel(r.errorClass)}
                       </Badge>
                     </td>
                     <td
@@ -828,8 +880,24 @@ function TopErrorReasonsCard({ reasons }: { reasons: ErrorReason[] }) {
                     >
                       {r.reason}
                     </td>
-                    <td className="px-4 py-1.5 text-right font-mono text-fg">
+                    <td className="px-3 py-1.5 text-right font-mono text-fg">
                       {r.count.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-1.5 text-right">
+                      {r.logsUrl ? (
+                        <a
+                          href={r.logsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open ${r.integration ?? "tenant"} error logs in Grafana`}
+                          className="inline-flex text-fg-subtle hover:text-accent transition-colors"
+                        >
+                          <ScrollText className="h-3.5 w-3.5" />
+                        </a>
+                      ) : (
+                        <span className="text-fg-subtle">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -848,7 +916,7 @@ function GraphSizeCard({
   graphSize: TenantHealthReport["graphSize"];
 }) {
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Network className="h-4 w-4 text-accent" /> Graph size

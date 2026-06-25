@@ -19,7 +19,7 @@ import type {
 } from "@/types/tenant";
 import { resolveDisplayName, makeNameResolver, fetchCustomerNames } from "@/lib/tenant-mapping";
 import { extractionLogStats } from "@/lib/tenant-logs";
-import { connectorDetailUrl, tenantHealthDashboardUrl } from "@/lib/tenant-grafana-links";
+import { connectorDetailUrl, tenantHealthDashboardUrl, lokiErrorLogsUrl } from "@/lib/tenant-grafana-links";
 
 /**
  * Per-tenant health report assembly. Grafana is the spine (metrics + alerts),
@@ -69,8 +69,8 @@ export interface ErrorReasonAggregate {
   byIntegration: Map<string, ErrorReason[]>;
   /** Total failing-datasource count per integration. */
   failingByType: Map<string, number>;
-  /** Tenant-level split by who acts on the failure. */
-  errorClass: { internal: number; user: number };
+  /** Tenant-level split by who acts on the failure (internal=Veza, user=customer, unknown=needs triage). */
+  errorClass: { internal: number; user: number; unknown: number };
   /** Tenant-level top error_reasons (with integration), most frequent first. */
   topErrorReasons: ErrorReason[];
 }
@@ -99,10 +99,9 @@ export function aggregateErrorReasons(
   }
   const byInt = new Map<string, ErrorReason[]>();
   const failingByType = new Map<string, number>();
-  const errorClass = { internal: 0, user: 0 };
+  const errorClass = { internal: 0, user: 0, unknown: 0 };
   for (const e of all) {
-    if (e.errorClass === "internal") errorClass.internal += e.count;
-    else if (e.errorClass === "user") errorClass.user += e.count;
+    errorClass[e.errorClass] += e.count;
     if (!e.integration) continue;
     failingByType.set(e.integration, (failingByType.get(e.integration) ?? 0) + e.count);
     const list = byInt.get(e.integration) ?? [];
@@ -301,6 +300,8 @@ interface IntegrationInputs {
   lagByType: Map<string, number>;
   /** Builds the per-connector drill-down URL for an integration (null when unconfigured). */
   connectorUrl: (integration: string) => string | null;
+  /** Builds the error-logs Explore URL for an integration (null when unconfigured). */
+  logsUrl: (integration: string) => string | null;
 }
 
 /**
@@ -367,6 +368,7 @@ export function buildIntegrationHealth(
       topReasons,
       topErrors,
       connectorUrl: inputs.connectorUrl(integration),
+      logsUrl: inputs.logsUrl(integration),
       alerts,
       breaches,
       severity,
@@ -540,11 +542,13 @@ export async function buildTenantReport(
   let topErrorsByType = new Map<string, ErrorSignature[]>();
   let errorTimeline: TenantHealthReport["errorTimeline"] = [];
   let region: string | null = null;
+  let logsDsUid: string | null = null;
   let featureFlags: TenantHealthReport["featureFlags"] = null;
   let dataPlane = { insightPointVersion: null as string | null, edpId: null as string | null };
   try {
     const logs = await extractionLogStats(tenant, inventory, windowHours);
     if (logs.dsUid) {
+      logsDsUid = logs.dsUid;
       providers = logs.providersByType;
       totalProviders = logs.totalProviders;
       hasProviderData = true;
@@ -578,6 +582,7 @@ export async function buildTenantReport(
     freshnessByType,
     lagByType,
     connectorUrl: (integration) => connectorDetailUrl(grafanaBase, tenant, integration),
+    logsUrl: (integration) => lokiErrorLogsUrl(grafanaBase, logsDsUid, tenant, integration, windowHours),
   });
 
   // --- JIRA tickets (Customer field join) ---
@@ -608,8 +613,12 @@ export async function buildTenantReport(
     integrations,
     graphWrites,
     graphSize,
-    errorClass: errAgg?.errorClass ?? { internal: 0, user: 0 },
-    topErrorReasons: errAgg?.topErrorReasons ?? [],
+    errorClass: errAgg?.errorClass ?? { internal: 0, user: 0, unknown: 0 },
+    topErrorReasons: (errAgg?.topErrorReasons ?? []).map((r) => ({
+      ...r,
+      logsUrl: lokiErrorLogsUrl(grafanaBase, logsDsUid, tenant, r.integration ?? null, windowHours),
+    })),
+    errorLogsUrl: lokiErrorLogsUrl(grafanaBase, logsDsUid, tenant, null, windowHours),
     errorTimeline,
     config: {
       cluster,

@@ -158,6 +158,8 @@ export interface IntegrationHealth {
   topErrors: ErrorSignature[];
   /** Deep link to the per-connector Grafana dashboard, or null when unconfigured. */
   connectorUrl: string | null;
+  /** Deep link to this integration's error logs in Grafana Explore, or null when unconfigured. */
+  logsUrl: string | null;
   alerts: TenantAlert[];
   breaches: ThresholdBreach[];
   /** Worst of alerts + breaches, or "ok". */
@@ -182,6 +184,8 @@ export interface ErrorReason {
   count: number;
   /** agent_type, when this is a tenant-level (cross-integration) entry. */
   integration?: string;
+  /** Deep link to the matching error logs in Grafana Explore, or null when unconfigured. */
+  logsUrl?: string | null;
 }
 
 /** A graph node/edge type with its count. */
@@ -304,8 +308,10 @@ export interface TenantHealthReport {
     topNodeTypes: GraphTypeCount[];
     topEdgeTypes: GraphTypeCount[];
   };
-  /** Tenant-level error split by who acts on it (the key triage axis). */
-  errorClass: { internal: number; user: number };
+  /** Tenant-level error split by who acts on it (the key triage axis). internal=Veza/product, user=customer, unknown=needs triage. */
+  errorClass: { internal: number; user: number; unknown: number };
+  /** Deep link to the tenant's error logs in Grafana Explore (regional Loki), or null when unconfigured. */
+  errorLogsUrl: string | null;
   /** Tenant-level top error_reasons across integrations, most frequent first. */
   topErrorReasons: ErrorReason[];
   /** Tenant-level extraction-error counts over time, for the timeline chart. */

@@ -57,8 +57,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
     expect(
@@ -75,7 +75,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -140,6 +140,7 @@ describe("buildIntegrationHealth", () => {
       freshnessByType: new Map([["okta", 3600]]),
       lagByType: new Map([["s3", 7200]]),
       connectorUrl: (i) => `https://g/d/connector-detail?var-agent_type=${i}`,
+      logsUrl: (i) => `https://g/explore?type=${i}`,
     });
     const names = rows.map((r) => r.integration);
     expect(names).toContain("okta");
@@ -192,6 +193,7 @@ describe("buildIntegrationHealth", () => {
       freshnessByType: new Map(),
       lagByType: new Map(),
       connectorUrl: () => null,
+      logsUrl: () => null,
       alertsByIntegration: new Map(),
     });
     expect(rows[0].providers).toBeNull();
@@ -211,9 +213,9 @@ describe("aggregateErrorReasons", () => {
     { metric: { agent_type: "s3", class: "", error_reason: "" }, value: 3 }, // unknown class + reason
     { metric: { agent_type: "ec2", class: "user", error_reason: "X" }, value: 0 }, // dropped (0)
   ];
-  it("splits internal vs user and tallies failing per integration", () => {
+  it("splits internal / user / unknown and tallies failing per integration", () => {
     const a = aggregateErrorReasons(rows);
-    expect(a.errorClass).toEqual({ internal: 4, user: 398 });
+    expect(a.errorClass).toEqual({ internal: 4, user: 398, unknown: 3 }); // s3 empty class -> unknown
     expect(a.failingByType.get("awslambda")).toBe(398);
     expect(a.failingByType.get("ec2")).toBeUndefined(); // 0 dropped
   });
@@ -221,7 +223,7 @@ describe("aggregateErrorReasons", () => {
     const a = aggregateErrorReasons([
       { metric: { class: "internal", error_reason: "INTERNAL" }, value: 9 }, // no agent_type
     ]);
-    expect(a.errorClass.internal).toBe(9);
+    expect(a.errorClass).toEqual({ internal: 9, user: 0, unknown: 0 });
     expect(a.failingByType.size).toBe(0);
     expect(a.byIntegration.size).toBe(0);
   });
