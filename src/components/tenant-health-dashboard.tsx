@@ -1116,7 +1116,7 @@ function ErrorTimeline({ points }: { points: ErrorTimelinePoint[] }) {
         return (
           <div
             key={i}
-            className="flex-1 min-w-0"
+            className="flex-1 min-w-0 h-full flex items-end"
             title={`${new Date(p.t).toLocaleString()} · ${p.count.toLocaleString()} error${p.count === 1 ? "" : "s"}`}
           >
             <div
