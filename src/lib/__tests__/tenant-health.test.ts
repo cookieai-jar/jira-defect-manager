@@ -56,8 +56,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 100 - 15(crit) - 6(warn) - 8(one int with errors) = 71
     expect(
@@ -74,7 +74,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, outdated: 0, topErrors: [], connectorUrl: null, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -99,6 +99,9 @@ describe("buildIntegrationHealth", () => {
       parseDurationMs: new Map([["okta", 2000], ["ad_base", 400], ["awsiam-okta", 9999]]),
       parseTasks: new Map([["okta", 10], ["ad_base", 4], ["awsiam-okta", 5]]),
       alertsByIntegration: new Map([["s3", [alert({ severity: "warning", integration: "s3" })]]]),
+      outdatedByType: new Map([["s3", 7]]),
+      topErrorsByType: new Map([["s3", [{ signature: "connect error", count: 14 }]]]),
+      connectorUrl: (i) => `https://g/d/connector-detail?var-agent_type=${i}`,
     });
     const names = rows.map((r) => r.integration);
     expect(names).toContain("okta");
@@ -110,8 +113,11 @@ describe("buildIntegrationHealth", () => {
     expect(okta.providers).toBe(12);
     expect(okta.parseAvgMs).toBe(200); // 2000ms / 10 tasks
     expect(okta.severity).toBe("ok");
+    expect(okta.connectorUrl).toBe("https://g/d/connector-detail?var-agent_type=okta");
 
     const s3 = rows.find((r) => r.integration === "s3")!;
+    expect(s3.outdated).toBe(7); // extraction lag
+    expect(s3.topErrors).toEqual([{ signature: "connect error", count: 14 }]);
     // alert warning + error_count>0 breach (default threshold) => warning
     expect(s3.severity).toBe("warning");
     expect(s3.extractionErrors).toBe(3);
@@ -130,6 +136,9 @@ describe("buildIntegrationHealth", () => {
       extractionErrors: new Map(),
       parseDurationMs: new Map(),
       parseTasks: new Map(),
+      outdatedByType: new Map(),
+      topErrorsByType: new Map(),
+      connectorUrl: () => null,
       alertsByIntegration: new Map(),
     });
     expect(rows[0].providers).toBeNull();

@@ -1,4 +1,11 @@
-import { listLokiDatasources, lokiStreamExists, lokiCountQuery } from "@/lib/grafana";
+import {
+  listLokiDatasources,
+  lokiStreamExists,
+  lokiCountQuery,
+  lokiRangeQuery,
+  lokiLogLines,
+} from "@/lib/grafana";
+import type { ErrorSignature, ErrorTimelinePoint } from "@/types/tenant";
 
 /**
  * Log-based extraction counts. The extractor worker logs a START / FINISH line
@@ -33,6 +40,71 @@ function countByTypeQuery(tenant: string, line: string, windowHours: number): st
 
 export function errorByTypeQuery(tenant: string, windowHours = 24): string {
   return countByTypeQuery(tenant, ERROR_LINE, windowHours);
+}
+
+/** LogQL metric: tenant-wide extraction errors per `bucket` (for the timeline range query). */
+export function errorTimelineQuery(tenant: string, bucket = "1h"): string {
+  return `sum(count_over_time(${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` [${bucket}]))`;
+}
+
+/** LogQL: recent extraction-error log lines (parsed) for signature sampling. */
+export function errorSamplesQuery(tenant: string): string {
+  return `${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` | json`;
+}
+
+/**
+ * PURE. Normalize an extractor error message into a stable signature by dropping
+ * the per-datasource "[type - uuid]" prefix and any ids, so the same failure
+ * mode across many datasources collapses to one signature.
+ */
+export function normalizeErrorSignature(msg: string): string {
+  return msg
+    .replace(/\[[^\]]*\]/g, "") // drop "[azure_sql - 019d…]" brackets
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, "<id>") // uuids
+    .replace(/\b[0-9a-f]{16,}\b/gi, "<id>") // long hex ids
+    .replace(/\b\d{5,}\b/g, "<n>") // long numbers
+    .replace(/\s+/g, " ")
+    .replace(/^(?:extract[:\s]+)+/i, "") // drop the leading "extract:"/"extract :" verb(s)
+    .replace(/^[\s:]+/, "")
+    .trim()
+    .slice(0, 180);
+}
+
+/**
+ * PURE. Group parsed error log lines by datasource_type and tally normalized
+ * signatures, returning the top `perType` signatures per integration.
+ */
+export function topErrorsByType(
+  lines: string[],
+  perType = 2,
+): Map<string, ErrorSignature[]> {
+  // type -> signature -> count
+  const acc = new Map<string, Map<string, number>>();
+  for (const raw of lines) {
+    let j: { datasource_type?: string; error?: string };
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    const type = j.datasource_type;
+    const err = j.error;
+    if (!type || !err) continue;
+    const sig = normalizeErrorSignature(String(err));
+    if (!sig) continue;
+    if (!acc.has(type)) acc.set(type, new Map());
+    const m = acc.get(type)!;
+    m.set(sig, (m.get(sig) ?? 0) + 1);
+  }
+  const out = new Map<string, ErrorSignature[]>();
+  for (const [type, m] of acc) {
+    const sigs = [...m.entries()]
+      .map(([signature, count]) => ({ signature, count }))
+      .sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature))
+      .slice(0, perType);
+    out.set(type, sigs);
+  }
+  return out;
 }
 
 /**
@@ -108,6 +180,10 @@ export interface ExtractionLogStats {
   totalProviders: number | null;
   /** Extraction-error-line count per datasource_type over `windowHours`. */
   errorByType: Map<string, number>;
+  /** Top error signatures per integration (datasource_type), from recent samples. */
+  topErrorsByType: Map<string, ErrorSignature[]>;
+  /** Tenant-wide extraction-error counts over time (hourly buckets). */
+  errorTimeline: ErrorTimelinePoint[];
 }
 
 function toMap(result: Array<{ metric: Record<string, string>; value: number }>): Map<string, number> {
@@ -137,18 +213,38 @@ export async function extractionLogStats(
 ): Promise<ExtractionLogStats> {
   const dsUid = await findTenantLogDatasource(tenant);
   if (!dsUid) {
-    return { dsUid: null, providersByType: new Map(), totalProviders: null, errorByType: new Map() };
+    return {
+      dsUid: null,
+      providersByType: new Map(),
+      totalProviders: null,
+      errorByType: new Map(),
+      topErrorsByType: new Map(),
+      errorTimeline: [],
+    };
   }
   // Base integration types only (skip CSC pairs); fan out distinct-provider counts.
   const types = inventory.filter((t) => !t.includes("-"));
-  const [total, error, perType] = await Promise.all([
+  const nowSec = Math.floor(Date.now() / 1000);
+  const startSec = nowSec - windowHours * 3600;
+  const [total, error, perType, samples, timeline] = await Promise.all([
     lokiCountQuery(dsUid, totalProvidersQuery(tenant)).catch(() => []),
     lokiCountQuery(dsUid, errorByTypeQuery(tenant, windowHours)).catch(() => []),
     mapLimit(types, 16, async (ty) => {
       const r = await lokiCountQuery(dsUid, providersForTypeQuery(tenant, ty)).catch(() => []);
       return [ty, scalar(r) ?? 0] as const;
     }),
+    lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 300).catch(() => []),
+    lokiRangeQuery(dsUid, errorTimelineQuery(tenant, "1h"), startSec, nowSec, 3600).catch(() => []),
   ]);
   const providersByType = new Map(perType.filter(([, n]) => n > 0));
-  return { dsUid, providersByType, totalProviders: scalar(total), errorByType: toMap(error) };
+  const errorTimeline: ErrorTimelinePoint[] =
+    timeline[0]?.points.map((p) => ({ t: p.t, count: Math.round(p.value) })) ?? [];
+  return {
+    dsUid,
+    providersByType,
+    totalProviders: scalar(total),
+    errorByType: toMap(error),
+    topErrorsByType: topErrorsByType(samples),
+    errorTimeline,
+  };
 }

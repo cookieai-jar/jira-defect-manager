@@ -185,6 +185,46 @@ export async function lokiCountQuery(uid: string, logql: string, now = Date.now(
   return parsePromInstant(await grafanaFetch<unknown>(url, e));
 }
 
+/** Run a Loki metric range query (e.g. count_over_time) — returns matrix series. */
+export async function lokiRangeQuery(
+  uid: string,
+  logql: string,
+  startSec: number,
+  endSec: number,
+  stepSec: number,
+): Promise<PromMatrixResult> {
+  const e = env();
+  const params = new URLSearchParams({
+    query: logql,
+    start: `${startSec}000000000`,
+    end: `${endSec}000000000`,
+    step: String(stepSec),
+  });
+  const url = `${lokiBase(e, uid)}/query_range?${params.toString()}`;
+  return parsePromMatrix(await grafanaFetch<unknown>(url, e));
+}
+
+/** Fetch up to `limit` recent raw log lines for a LogQL selector (newest first). */
+export async function lokiLogLines(
+  uid: string,
+  logql: string,
+  startSec: number,
+  endSec: number,
+  limit = 200,
+): Promise<string[]> {
+  const e = env();
+  const params = new URLSearchParams({
+    query: logql,
+    start: `${startSec}000000000`,
+    end: `${endSec}000000000`,
+    limit: String(limit),
+    direction: "backward",
+  });
+  const url = `${lokiBase(e, uid)}/query_range?${params.toString()}`;
+  const r = await grafanaFetch<{ data?: { result?: Array<{ values?: [string, string][] }> } }>(url, e);
+  return (r?.data?.result ?? []).flatMap((s) => (s.values ?? []).map((v) => v[1]));
+}
+
 /** True when a Loki stream selector returns at least one line in the last `hours`. */
 export async function lokiStreamExists(uid: string, selector: string, hours = 6, now = Date.now()): Promise<boolean> {
   const e = env();

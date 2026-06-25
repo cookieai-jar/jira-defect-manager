@@ -2,6 +2,7 @@ import { queryInstant, fetchActiveAlerts, parseTenantAlerts, parseAlertsByTenant
 import { searchIssues } from "@/lib/jira";
 import { DEFAULT_THRESHOLDS, evaluateMetrics } from "@/lib/tenant-thresholds";
 import type {
+  ErrorSignature,
   FleetReport,
   FleetTenantSummary,
   GraphWrite,
@@ -15,6 +16,7 @@ import type {
 } from "@/types/tenant";
 import { resolveDisplayName, makeNameResolver, fetchCustomerNames } from "@/lib/tenant-mapping";
 import { extractionLogStats } from "@/lib/tenant-logs";
+import { connectorDetailUrl, tenantHealthDashboardUrl } from "@/lib/tenant-grafana-links";
 
 /**
  * Per-tenant health report assembly. Grafana is the spine (metrics + alerts),
@@ -193,6 +195,12 @@ interface IntegrationInputs {
   parseDurationMs: Map<string, number>;
   parseTasks: Map<string, number>;
   alertsByIntegration: Map<string, TenantAlert[]>;
+  /** Outdated-datasource count per integration (extraction lag); keys lowercased. */
+  outdatedByType: Map<string, number>;
+  /** Top error signatures per integration. */
+  topErrorsByType: Map<string, ErrorSignature[]>;
+  /** Builds the per-connector drill-down URL for an integration (null when unconfigured). */
+  connectorUrl: (integration: string) => string | null;
 }
 
 /**
@@ -233,7 +241,21 @@ export function buildIntegrationHealth(
       ...alerts.map((a) => a.severity),
       ...breaches.map((b) => b.severity),
     ]);
-    return { integration, providers, extractionErrors, parseAvgMs, parseTasks, alerts, breaches, severity };
+    const outdated = Math.round(inputs.outdatedByType.get(integration) ?? 0);
+    const topErrors = inputs.topErrorsByType.get(integration) ?? [];
+    return {
+      integration,
+      providers,
+      extractionErrors,
+      parseAvgMs,
+      parseTasks,
+      outdated,
+      topErrors,
+      connectorUrl: inputs.connectorUrl(integration),
+      alerts,
+      breaches,
+      severity,
+    };
   });
 
   return rows.sort((a, b) => {
@@ -284,13 +306,19 @@ export async function buildTenantReport(
   let parseDurationMs = new Map<string, number>();
   let parseTasks = new Map<string, number>();
   let graphWrites: GraphWrite[] = [];
+  let datasources: number | null = null;
+  let outdatedByType = new Map<string, number>();
   try {
-    const [ext, err, dur, tasks, writes] = await Promise.all([
+    const [ext, err, dur, tasks, writes, dsCount, outdated] = await Promise.all([
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_errors_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_duration_ms_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_total${sel}[${w}]))`),
       queryInstant(`sum by (entity_type, operation) (increase(veza_platform_parser_neo4j_writes_total${sel}[${w}]))`),
+      // datasource_count has duplicate series per pod — max() dedupes.
+      queryInstant(`max(cookie_platform_datasource_count${sel})`),
+      // outdated datasources = extraction lag; agent_type label is UPPERCASE here.
+      queryInstant(`sum by (agent_type) (veza_platform_datasources_flagged_outdated_total${sel})`),
     ]);
     inventory = [...byLabel(ext, "agent_type").keys()];
     extractionErrors = byLabel(err, "agent_type");
@@ -299,6 +327,11 @@ export async function buildTenantReport(
     graphWrites = writes
       .map((r) => ({ entityType: r.metric.entity_type ?? "?", operation: r.metric.operation ?? "?", count: Math.round(r.value) }))
       .sort((a, b) => b.count - a.count);
+    datasources = dsCount.length > 0 ? Math.round(dsCount[0].value) : null;
+    for (const r of outdated) {
+      const k = (r.metric.agent_type ?? "").toLowerCase(); // match lowercase inventory keys
+      if (k) outdatedByType.set(k, (outdatedByType.get(k) ?? 0) + r.value);
+    }
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn(`[tenant-health] metrics query failed for ${tenant}:`, e instanceof Error ? e.message : e);
@@ -326,6 +359,8 @@ export async function buildTenantReport(
   let providers = new Map<string, number>();
   let totalProviders: number | null = null;
   let hasProviderData = false;
+  let topErrorsByType = new Map<string, ErrorSignature[]>();
+  let errorTimeline: TenantHealthReport["errorTimeline"] = [];
   try {
     const logs = await extractionLogStats(tenant, inventory, windowHours);
     if (logs.dsUid) {
@@ -333,12 +368,15 @@ export async function buildTenantReport(
       totalProviders = logs.totalProviders;
       hasProviderData = true;
       if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
+      topErrorsByType = logs.topErrorsByType;
+      errorTimeline = logs.errorTimeline;
       sources.loki = true;
     }
   } catch (e) {
     console.warn(`[tenant-health] provider-log count failed for ${tenant}:`, e instanceof Error ? e.message : e);
   }
 
+  const grafanaBase = process.env.GRAFANA_URL ?? null;
   const integrations = buildIntegrationHealth({
     inventory,
     providers,
@@ -347,6 +385,9 @@ export async function buildTenantReport(
     parseDurationMs,
     parseTasks,
     alertsByIntegration,
+    outdatedByType,
+    topErrorsByType,
+    connectorUrl: (integration) => connectorDetailUrl(grafanaBase, tenant, integration),
   });
 
   // --- JIRA tickets (Customer field join) ---
@@ -376,6 +417,8 @@ export async function buildTenantReport(
     windowHours,
     integrations,
     graphWrites,
+    errorTimeline,
+    healthDashboardUrl: tenantHealthDashboardUrl(grafanaBase),
     alerts,
     errorClassification: classifyErrors(alerts),
     jiraTickets,
@@ -384,6 +427,7 @@ export async function buildTenantReport(
     totals: {
       integrations: integrations.length,
       providers: totalProviders,
+      datasources,
       extractionErrors: Math.round(totalErrors),
       activeAlerts: alerts.filter((a) => a.state === "firing").length,
     },

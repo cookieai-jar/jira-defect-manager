@@ -129,10 +129,29 @@ export interface IntegrationHealth {
   /** Windowed avg parse ms per task (null when no parse tasks in window). */
   parseAvgMs: number | null;
   parseTasks: number;
+  /** Datasources flagged outdated — the extraction-lag/freshness signal. */
+  outdated: number;
+  /** Top recurring error signatures for this integration (most frequent first). */
+  topErrors: ErrorSignature[];
+  /** Deep link to the per-connector Grafana dashboard, or null when unconfigured. */
+  connectorUrl: string | null;
   alerts: TenantAlert[];
   breaches: ThresholdBreach[];
   /** Worst of alerts + breaches, or "ok". */
   severity: Severity;
+}
+
+/** A normalized error message + how many times it occurred in the window. */
+export interface ErrorSignature {
+  signature: string;
+  count: number;
+}
+
+/** One bucket of the tenant-level extraction-error timeline. */
+export interface ErrorTimelinePoint {
+  /** ISO timestamp (bucket start). */
+  t: string;
+  count: number;
 }
 
 /** Tenant-level Neo4j write volume (write throughput, NOT absolute graph size). */
@@ -204,6 +223,10 @@ export interface TenantHealthReport {
   integrations: IntegrationHealth[];
   /** Tenant-level graph write volume over the window. */
   graphWrites: GraphWrite[];
+  /** Tenant-level extraction-error counts over time, for the timeline chart. */
+  errorTimeline: ErrorTimelinePoint[];
+  /** Deep link to the tenant-health Grafana dashboard, or null when unconfigured. */
+  healthDashboardUrl: string | null;
   /** All active alerts for the tenant (including non-integration infra alerts). */
   alerts: TenantAlert[];
   /** Known vs unknown error tally (errclass user|internal taxonomy). */
@@ -219,6 +242,8 @@ export interface TenantHealthReport {
     integrations: number;
     /** Distinct providers (accounts/instances) extracting for this tenant. */
     providers: number | null;
+    /** Total datasources (resources) across the tenant, or null when unavailable. */
+    datasources: number | null;
     extractionErrors: number;
     activeAlerts: number;
   };

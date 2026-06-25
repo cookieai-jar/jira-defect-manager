@@ -7,10 +7,13 @@ import { Badge, HealthBadge } from "@/components/ui/badge";
 import { StatusChip } from "@/components/jira-chips";
 import { cn } from "@/lib/utils";
 import {
+  Activity,
   AlertTriangle,
   ArrowLeft,
   Boxes,
   ChevronRight,
+  Clock,
+  Database,
   ExternalLink,
   HeartPulse,
   Inbox,
@@ -21,6 +24,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type {
+  ErrorTimelinePoint,
   GraphWrite,
   IntegrationHealth,
   Severity,
@@ -150,6 +154,18 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               <span className="text-fg-muted"> · last {report.windowHours}h</span>
             </span>
           )}
+          {report?.healthDashboardUrl && (
+            <a
+              href={report.healthDashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 rounded border border-border bg-bg-card px-2.5 py-1.5 text-xs font-medium text-fg-muted hover:text-accent hover:bg-bg-muted/60 transition-colors"
+              title="Open the tenant health dashboard in Grafana"
+            >
+              Grafana
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
           <button
             type="button"
             onClick={refresh}
@@ -214,7 +230,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
           </Card>
 
           {/* 3. Summary stat tiles */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             <Stat
               icon={<Boxes className="h-4 w-4 text-accent" />}
               label="Integrations"
@@ -225,6 +241,12 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               label="Providers"
               hint="actively extracting"
               value={report.totals.providers ?? 0}
+            />
+            <Stat
+              icon={<Database className="h-4 w-4 text-accent" />}
+              label="Datasources"
+              hint="resources across tenant"
+              value={report.totals.datasources}
             />
             <Stat
               icon={<AlertTriangle className="h-4 w-4 text-danger" />}
@@ -279,11 +301,13 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                       <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
                         <th className="text-left font-medium px-4 py-2">Integration</th>
                         <th className="text-right font-medium px-3 py-2">Providers</th>
+                        <th className="text-right font-medium px-3 py-2">Lag</th>
                         <th className="text-right font-medium px-3 py-2">Errors</th>
                         <th className="text-right font-medium px-3 py-2">Parse avg</th>
                         <th className="text-right font-medium px-3 py-2">Parse tasks</th>
                         <th className="text-right font-medium px-3 py-2">Alerts</th>
                         <th className="text-left font-medium px-4 py-2">Severity</th>
+                        <th className="w-8 px-2 py-2" aria-label="Links" />
                       </tr>
                     </thead>
                     <tbody>
@@ -294,6 +318,19 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                   </table>
                 </div>
               )}
+            </CardBody>
+          </Card>
+
+          {/* 5b. Extraction errors over time */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-accent" /> Extraction errors over time
+              </CardTitle>
+              <span className="text-[11px] text-fg-subtle">last {report.windowHours}h</span>
+            </CardHeader>
+            <CardBody>
+              <ErrorTimeline points={report.errorTimeline} />
             </CardBody>
           </Card>
 
@@ -389,11 +426,40 @@ function AlertRow({ alert }: { alert: TenantAlert }) {
 }
 
 function IntegrationRow({ it }: { it: IntegrationHealth }) {
+  const topErrors = it.topErrors.slice(0, 2);
   return (
-    <tr className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors">
-      <td className="px-4 py-1.5 font-medium text-fg">{it.integration}</td>
+    <tr className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors align-top">
+      <td className="px-4 py-1.5 font-medium text-fg">
+        <div>{it.integration}</div>
+        {topErrors.length > 0 && (
+          <div className="mt-0.5 space-y-0.5">
+            {topErrors.map((e, i) => (
+              <div
+                key={i}
+                className="max-w-[22rem] truncate text-[11px] font-normal text-danger/80"
+                title={`${e.signature} ×${e.count.toLocaleString()}`}
+              >
+                {e.signature} <span className="text-fg-subtle">×{e.count.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </td>
       <td className="px-3 py-1.5 text-right font-mono text-fg-muted">
         {it.providers == null ? "—" : it.providers.toLocaleString()}
+      </td>
+      <td className="px-3 py-1.5 text-right">
+        {it.outdated > 0 ? (
+          <span
+            className="inline-flex items-center gap-1 font-mono text-warning"
+            title={`${it.outdated.toLocaleString()} outdated datasource(s)`}
+          >
+            <Clock className="h-3 w-3" />
+            {it.outdated.toLocaleString()}
+          </span>
+        ) : (
+          <span className="font-mono text-fg-subtle">0</span>
+        )}
       </td>
       <td
         className={cn(
@@ -424,6 +490,20 @@ function IntegrationRow({ it }: { it: IntegrationHealth }) {
           {it.severity}
         </Badge>
       </td>
+      <td className="px-2 py-1.5 text-right">
+        {it.connectorUrl && (
+          <a
+            href={it.connectorUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex text-fg-subtle hover:text-accent transition-colors"
+            title="Open connector dashboard in Grafana"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        )}
+      </td>
     </tr>
   );
 }
@@ -436,6 +516,39 @@ function GraphWriteRow({ write }: { write: GraphWrite }) {
         <span className="text-fg-subtle"> / {write.operation}</span>
       </span>
       <span className="font-mono text-fg">{write.count.toLocaleString()}</span>
+    </div>
+  );
+}
+
+function ErrorTimeline({ points }: { points: ErrorTimelinePoint[] }) {
+  const max = points.reduce((m, p) => Math.max(m, p.count), 0);
+  if (points.length === 0 || max === 0) {
+    return <p className="text-sm text-fg-muted">No extraction errors in the window.</p>;
+  }
+  return (
+    <div className="flex h-20 w-full items-end gap-px">
+      {points.map((p, i) => {
+        // Floor visible bars to a hairline so empty buckets still register.
+        const pct = p.count > 0 ? Math.max(4, (p.count / max) * 100) : 0;
+        const tone =
+          p.count >= max * 0.66
+            ? "bg-danger"
+            : p.count >= max * 0.33
+              ? "bg-warning"
+              : "bg-accent";
+        return (
+          <div
+            key={i}
+            className="flex-1 min-w-0"
+            title={`${new Date(p.t).toLocaleString()} · ${p.count.toLocaleString()} error${p.count === 1 ? "" : "s"}`}
+          >
+            <div
+              className={cn("w-full rounded-sm", p.count > 0 ? tone : "bg-bg-muted")}
+              style={{ height: `${pct}%`, minHeight: p.count > 0 ? undefined : "1px" }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -539,7 +652,7 @@ function Stat({
   icon: React.ReactNode;
   label: string;
   hint?: string;
-  value: number;
+  value: number | null;
   tone?: "danger" | "warning" | "success";
 }) {
   const toneCls =
@@ -556,7 +669,7 @@ function Stat({
         {icon} {label}
       </div>
       <div className={`mt-1.5 text-2xl font-semibold ${toneCls}`}>
-        {value.toLocaleString()}
+        {value == null ? "—" : value.toLocaleString()}
       </div>
       {hint && <div className="mt-0.5 text-[10px] text-fg-subtle">{hint}</div>}
     </div>
