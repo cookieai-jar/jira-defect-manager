@@ -218,6 +218,12 @@ export interface ErrorRcaResult {
   /** Number of distinct error log samples that informed the analysis. */
   sampleCount: number;
   generatedAt: string;
+  /**
+   * Fingerprint of the integration's error signals at analysis time. The UI
+   * compares it to the current signals to flag the analysis as stale (the
+   * failure picture changed since this RCA was generated).
+   */
+  signalsFingerprint: string;
   /** Present when analysis failed — a degraded placeholder result. */
   error?: string;
 }

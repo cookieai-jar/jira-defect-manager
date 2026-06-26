@@ -11,6 +11,8 @@ import type {
   Priority,
   PriorityChange,
 } from "@/types/triage";
+import type { IntegrationsAnalysis } from "@/types/integrations";
+import type { ErrorRcaResult } from "@/types/tenant";
 
 const DATA_DIR = join(process.cwd(), "data");
 mkdirSync(DATA_DIR, { recursive: true });
@@ -91,6 +93,32 @@ export function db(): DatabaseSync {
       decided_ticket_updated_at TEXT,
       revisit_flagged INTEGER NOT NULL DEFAULT 0,
       revisit_reason TEXT
+    );
+
+    -- Strategic Integrations dashboard: its own issue + report storage, kept
+    -- separate from the triage-scope issues/reports tables because its
+    -- analysis is a cross-ticket pattern report, not per-ticket triage.
+    CREATE TABLE IF NOT EXISTS integration_issues (
+      key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS integration_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Tenant Health: persisted root-cause analyses, one per (tenant, integration).
+    -- Re-running an analysis upserts. The result JSON carries the signals
+    -- fingerprint used to flag staleness against the live failure picture.
+    CREATE TABLE IF NOT EXISTS rca_results (
+      tenant TEXT NOT NULL,
+      integration TEXT NOT NULL,
+      data TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (tenant, integration)
     );
   `);
 
@@ -347,4 +375,71 @@ export function latestSyncRun(scope: Scope) {
   return db()
     .prepare(`SELECT * FROM sync_runs WHERE scope = ? ORDER BY id DESC LIMIT 1`)
     .get(scope);
+}
+
+// --- Strategic Integrations storage -----------------------------------------
+
+/** Replace the stored integration issue set with the freshly synced one. */
+export function replaceIntegrationIssues(issues: JiraIssue[]) {
+  const conn = db();
+  conn.exec("DELETE FROM integration_issues");
+  const stmt = conn.prepare(
+    `INSERT INTO integration_issues (key, data, synced_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+  );
+  for (const issue of issues) stmt.run(issue.key, JSON.stringify(issue));
+}
+
+export function listIntegrationIssues(): JiraIssue[] {
+  const rows = db()
+    .prepare(`SELECT data FROM integration_issues ORDER BY key`)
+    .all() as { data: string }[];
+  return rows.map((r) => JSON.parse(r.data) as JiraIssue);
+}
+
+export function getIntegrationIssue(key: string): JiraIssue | null {
+  const row = db()
+    .prepare(`SELECT data FROM integration_issues WHERE key = ?`)
+    .get(key) as { data: string } | undefined;
+  return row ? (JSON.parse(row.data) as JiraIssue) : null;
+}
+
+export function saveIntegrationsReport(report: IntegrationsAnalysis): number {
+  const info = db()
+    .prepare(`INSERT INTO integration_reports (data) VALUES (?)`)
+    .run(JSON.stringify(report));
+  return Number(info.lastInsertRowid);
+}
+
+export function latestIntegrationsReport(): IntegrationsAnalysis | null {
+  const row = db()
+    .prepare(`SELECT data FROM integration_reports ORDER BY id DESC LIMIT 1`)
+    .get() as { data: string } | undefined;
+  return row ? (JSON.parse(row.data) as IntegrationsAnalysis) : null;
+}
+
+/** Upsert a tenant's per-integration root-cause analysis (re-run overwrites). */
+export function saveRcaResult(tenant: string, result: ErrorRcaResult): void {
+  db().prepare(
+    `INSERT INTO rca_results (tenant, integration, data, generated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(tenant, integration)
+     DO UPDATE SET data = excluded.data, generated_at = excluded.generated_at`,
+  ).run(tenant, result.integration, JSON.stringify(result), result.generatedAt);
+}
+
+/** All persisted RCAs for a tenant, newest first. */
+export function listRcaResults(tenant: string): ErrorRcaResult[] {
+  const rows = db()
+    .prepare(`SELECT data FROM rca_results WHERE tenant = ? ORDER BY generated_at DESC`)
+    .all(tenant) as { data: string }[];
+  return rows.map((r) => JSON.parse(r.data) as ErrorRcaResult);
+}
+
+/** Delete persisted RCAs for a tenant (the "Clear" action), or one integration. */
+export function deleteRcaResults(tenant: string, integration?: string): void {
+  if (integration) {
+    db().prepare(`DELETE FROM rca_results WHERE tenant = ? AND integration = ?`).run(tenant, integration);
+  } else {
+    db().prepare(`DELETE FROM rca_results WHERE tenant = ?`).run(tenant);
+  }
 }

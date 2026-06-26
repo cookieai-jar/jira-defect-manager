@@ -44,6 +44,7 @@ import type {
   TenantJiraTicket,
 } from "@/types/tenant";
 import { groupTicketsByProject, type ProjectTicketGroup } from "@/lib/tenant-jira";
+import { signalsFingerprint } from "@/lib/rca-core";
 
 interface ReportResponse {
   report: TenantHealthReport | null;
@@ -180,6 +181,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             confidence: "low",
             sampleCount: 0,
             generatedAt: new Date().toISOString(),
+            signalsFingerprint: signalsFingerprint(toSignals(it)),
             error: data.error ?? "no result",
           };
         setRca((m) => new Map(m).set(it.integration, result));
@@ -195,6 +197,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             confidence: "low",
             sampleCount: 0,
             generatedAt: new Date().toISOString(),
+            signalsFingerprint: signalsFingerprint(toSignals(it)),
             error: "request failed",
           }),
         );
@@ -259,6 +262,32 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
     refresh();
   }, [refresh]);
 
+  // Seed persisted RCAs for this tenant so prior analyses survive refresh/navigation.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = (await fetch(
+          `/api/tenant/error-analysis?tenant=${encodeURIComponent(tenant)}`,
+        ).then((r) => r.json())) as { results?: ErrorRcaResult[] };
+        if (!cancelled && data.results?.length) {
+          // Merge with local state preferring any analysis already run this session
+          // (avoids a slow seed clobbering a just-completed result).
+          setRca((prev) => {
+            const merged = new Map(data.results!.map((r) => [r.integration, r]));
+            for (const [k, v] of prev) merged.set(k, v);
+            return merged;
+          });
+        }
+      } catch {
+        /* persisted RCAs are best-effort */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant]);
+
   const sortedAlerts = useMemo(
     () =>
       [...(report?.alerts ?? [])].sort(
@@ -282,6 +311,14 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
       extracting: integrations.filter((it) => it.extractingNow).map((it) => it.integration),
       parsing: integrations.filter((it) => it.parsingNow).map((it) => it.integration),
     };
+  }, [report]);
+
+  // Current signal fingerprint per integration — compared to each stored RCA's
+  // fingerprint to flag it fresh vs stale (the failure picture changed since).
+  const currentFingerprints = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const it of report?.integrations ?? []) m.set(it.integration, signalsFingerprint(toSignals(it)));
+    return m;
   }, [report]);
 
   const ticketGroups = useMemo(
@@ -553,12 +590,23 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
           {/* 5a-ii. Root-cause analysis results */}
           {rca.size > 0 && (
             <RcaResultsCard
-              results={sortedIntegrations
-                .map((it) => rca.get(it.integration))
-                .filter((r): r is ErrorRcaResult => Boolean(r))}
+              results={(() => {
+                // Show analyzed integrations in the table's order, then any whose
+                // integration is no longer present in the report (still useful history).
+                const inOrder = sortedIntegrations
+                  .map((it) => rca.get(it.integration))
+                  .filter((r): r is ErrorRcaResult => Boolean(r));
+                const shown = new Set(inOrder.map((r) => r.integration));
+                const orphans = [...rca.values()].filter((r) => !shown.has(r.integration));
+                return [...inOrder, ...orphans];
+              })()}
+              currentFingerprints={currentFingerprints}
               onDismiss={() => {
                 setRca(new Map());
                 setRcaProgress(null);
+                fetch(`/api/tenant/error-analysis?tenant=${encodeURIComponent(tenant)}`, {
+                  method: "DELETE",
+                }).catch(() => {});
               }}
             />
           )}
@@ -1130,7 +1178,13 @@ function confidenceClass(c: ErrorRcaResult["confidence"]): string {
   return "text-fg-subtle";
 }
 
-function RcaResultItem({ r }: { r: ErrorRcaResult }) {
+/** Relative "x ago" from an ISO timestamp. */
+function formatAgo(iso: string): string {
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  return formatAge(sec);
+}
+
+function RcaResultItem({ r, stale }: { r: ErrorRcaResult; stale: boolean }) {
   return (
     <div
       className={cn(
@@ -1144,8 +1198,20 @@ function RcaResultItem({ r }: { r: ErrorRcaResult }) {
         <span className={cn("text-[11px] font-medium", confidenceClass(r.confidence))}>
           {r.confidence} confidence
         </span>
-        <span className="ml-auto text-[10px] text-fg-subtle">
-          {r.sampleCount} log sample{r.sampleCount === 1 ? "" : "s"}
+        {stale ? (
+          <Badge
+            className="border border-warning/40 bg-warning/10 text-warning"
+            title="The integration's error signals changed after this analysis — re-run for a current picture."
+          >
+            stale
+          </Badge>
+        ) : (
+          <Badge className="border border-success/40 bg-success/10 text-success" title="Matches the current failure signals.">
+            fresh
+          </Badge>
+        )}
+        <span className="ml-auto text-[10px] text-fg-subtle" title={new Date(r.generatedAt).toLocaleString()}>
+          {r.sampleCount} log sample{r.sampleCount === 1 ? "" : "s"} · analyzed {formatAgo(r.generatedAt)} ago
         </span>
       </div>
       <p className="mt-2 text-sm font-medium text-fg">{r.headline}</p>
@@ -1180,11 +1246,20 @@ function RcaResultItem({ r }: { r: ErrorRcaResult }) {
 
 function RcaResultsCard({
   results,
+  currentFingerprints,
   onDismiss,
 }: {
   results: ErrorRcaResult[];
+  currentFingerprints: Map<string, string>;
   onDismiss: () => void;
 }) {
+  // Stale = the integration's live fingerprint differs from the analyzed one, or
+  // the integration is no longer in the report (can't confirm it still matches).
+  const isStale = (r: ErrorRcaResult): boolean => {
+    const cur = currentFingerprints.get(r.integration);
+    return cur === undefined || cur !== r.signalsFingerprint;
+  };
+  const staleCount = results.filter(isStale).length;
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
@@ -1194,6 +1269,7 @@ function RcaResultsCard({
           </CardTitle>
           <span className="text-[11px] text-fg-subtle">
             AI-generated from error logs + metrics — verify before acting
+            {staleCount > 0 && ` · ${staleCount} stale (signals changed — re-run)`}
           </span>
         </div>
         <button
@@ -1206,7 +1282,7 @@ function RcaResultsCard({
       </CardHeader>
       <CardBody className="space-y-3">
         {results.map((r) => (
-          <RcaResultItem key={r.integration} r={r} />
+          <RcaResultItem key={r.integration} r={r} stale={isStale(r)} />
         ))}
       </CardBody>
     </Card>

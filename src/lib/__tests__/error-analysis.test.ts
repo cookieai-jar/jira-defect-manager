@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { pickDistinctErrorSamples, compactErrorContext, normalizeRca, isSafeIdentifier } from "@/lib/error-analysis";
+import { signalsFingerprint } from "@/lib/rca-core";
 import { errorSamplesByTypeQuery } from "@/lib/tenant-logs";
 import type { IntegrationErrorSignals } from "@/types/tenant";
 
@@ -120,15 +121,17 @@ describe("normalizeRca", () => {
       "azure_sql",
       5,
       "2026-06-25T00:00:00.000Z",
+      "fp-1",
     );
     expect(r.integration).toBe("azure_sql"); // not the model's echo
     expect(r.ownership).toBe("user");
     expect(r.confidence).toBe("high");
     expect(r.fix).toEqual(["Rotate creds", "Re-consent"]);
     expect(r.sampleCount).toBe(5);
+    expect(r.signalsFingerprint).toBe("fp-1");
   });
   it("defaults bad enums and missing fields", () => {
-    const r = normalizeRca({ ownership: "banana", confidence: "vibes" }, "okta", 0, "t");
+    const r = normalizeRca({ ownership: "banana", confidence: "vibes" }, "okta", 0, "t", "fp");
     expect(r.ownership).toBe("unknown");
     expect(r.confidence).toBe("low");
     expect(r.headline).toBe("Root cause analysis unavailable");
@@ -141,10 +144,50 @@ describe("normalizeRca", () => {
       "s3",
       1,
       "t",
+      "fp",
     );
     expect(r.evidence).toContain("ok");
     expect(r.evidence).toContain('{"code":500}');
     expect(r.evidence).not.toContain(""); // blanks dropped
     expect(r.fix[0].length).toBeLessThanOrEqual(401); // 400 + ellipsis
+  });
+});
+
+describe("signalsFingerprint (stale detection)", () => {
+  const base: IntegrationErrorSignals = {
+    integration: "azure_sql",
+    state: "failing",
+    severity: "critical",
+    failing: 7,
+    extractionErrors: 412,
+    freshnessSec: 100,
+    lagSec: 200,
+    topReasons: [
+      { reason: "AUTH_TOKEN_EXPIRED", errorClass: "user", count: 400 },
+      { reason: "INTERNAL", errorClass: "internal", count: 12 },
+    ],
+    topErrors: [],
+  };
+  it("is stable across reorderings + drifting counts (the perma-stale trap)", () => {
+    const drifted = {
+      ...base,
+      freshnessSec: 9999, // not part of the fingerprint
+      lagSec: 1, // not part of the fingerprint
+      failing: 999, // gauge fluctuates as datasources retry — must NOT flip stale
+      extractionErrors: base.extractionErrors + 1, // rolling counter ticks every window — must NOT flip
+      topReasons: [base.topReasons[1], base.topReasons[0]], // order flipped
+    };
+    expect(signalsFingerprint(drifted)).toBe(signalsFingerprint(base));
+  });
+  it("changes only when the NATURE of the failure changes (state, severity, or reason set)", () => {
+    expect(signalsFingerprint({ ...base, state: "ok" })).not.toBe(signalsFingerprint(base));
+    expect(signalsFingerprint({ ...base, severity: "warning" })).not.toBe(signalsFingerprint(base));
+    expect(
+      signalsFingerprint({ ...base, topReasons: [{ reason: "NEW_REASON", errorClass: "user", count: 1 }] }),
+    ).not.toBe(signalsFingerprint(base));
+    // adding a brand-new reason class flips it; recount of an existing reason does not
+    expect(
+      signalsFingerprint({ ...base, topReasons: [{ ...base.topReasons[0], count: 1 }, base.topReasons[1]] }),
+    ).toBe(signalsFingerprint(base));
   });
 });

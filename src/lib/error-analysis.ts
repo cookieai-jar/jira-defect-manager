@@ -11,7 +11,10 @@
 import { defaultModel, jsonCompletion } from "./anthropic";
 import { findTenantLogDatasource, errorSamplesByTypeQuery, normalizeErrorSignature } from "./tenant-logs";
 import { lokiLogLines } from "./grafana";
+import { safeCount, signalsFingerprint } from "./rca-core";
 import type { ErrorRcaResult, IntegrationErrorSignals } from "@/types/tenant";
+
+export { signalsFingerprint } from "./rca-core";
 
 /**
  * Tenant slugs and agent_types are lowercase alnum + hyphen/underscore. We
@@ -70,11 +73,6 @@ export function pickDistinctErrorSamples(lines: string[], max = 6): ErrorSample[
     });
   }
   return [...bySig.values()].sort((a, b) => b.count - a.count).slice(0, max);
-}
-
-/** Coerce a client-supplied count to a safe non-negative integer. */
-function safeCount(v: number): number {
-  return Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
 }
 
 /** PURE. Human-readable age for the prompt. */
@@ -187,6 +185,7 @@ export function normalizeRca(
   integration: string,
   sampleCount: number,
   generatedAt: string,
+  fingerprint: string,
 ): ErrorRcaResult {
   const ownership = OWNERSHIP.has(raw.ownership ?? "") ? (raw.ownership as ErrorRcaResult["ownership"]) : "unknown";
   const confidence = CONFIDENCE.has(raw.confidence ?? "") ? (raw.confidence as ErrorRcaResult["confidence"]) : "low";
@@ -200,6 +199,7 @@ export function normalizeRca(
     confidence,
     sampleCount,
     generatedAt,
+    signalsFingerprint: fingerprint,
   };
 }
 
@@ -256,5 +256,11 @@ export async function analyzeIntegrationErrors(opts: {
     systemCacheable: true,
     maxTokens: 2000,
   });
-  return normalizeRca(raw, opts.signals.integration, samples.length, new Date(now).toISOString());
+  return normalizeRca(
+    raw,
+    opts.signals.integration,
+    samples.length,
+    new Date(now).toISOString(),
+    signalsFingerprint(opts.signals),
+  );
 }
