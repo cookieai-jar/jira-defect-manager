@@ -221,6 +221,34 @@ describe("buildIntegrationHealth", () => {
     expect(rows[0].failing).toBe(0);
     expect(rows[0].freshnessSec).toBeNull();
   });
+
+  it("surfaces an integration that is only running NOW (not in the window inventory)", () => {
+    // okta is extracting right now but had no completed extractions/providers/parse
+    // in the window — it must still appear, with extractingNow true.
+    const rows = buildIntegrationHealth({
+      inventory: ["s3"],
+      providers: new Map([["s3", 1]]),
+      hasProviderData: true,
+      extractionErrors: new Map(),
+      parseDurationMs: new Map(),
+      parseTasks: new Map(),
+      alertsByIntegration: new Map(),
+      outdatedByType: new Map(),
+      topErrorsByType: new Map(),
+      extractingNowTypes: new Set(["okta"]),
+      parsingNowTypes: new Set(["exchange_online"]),
+      failingByType: new Map(),
+      topReasonsByType: new Map(),
+      freshnessByType: new Map(),
+      lagByType: new Map(),
+      connectorUrl: () => null,
+      logsUrl: () => null,
+    });
+    const okta = rows.find((r) => r.integration === "okta");
+    const exch = rows.find((r) => r.integration === "exchange_online");
+    expect(okta?.extractingNow).toBe(true);
+    expect(exch?.parsingNow).toBe(true);
+  });
 });
 
 import { aggregateErrorReasons } from "@/lib/tenant-health";

@@ -396,6 +396,12 @@ export function buildIntegrationHealth(
   const names = new Set<string>(inputs.inventory);
   for (const k of inputs.providers.keys()) names.add(k);
   for (const k of inputs.parseTasks.keys()) if (!k.includes("-")) names.add(k);
+  // Anything actively running NOW must get a row even if it had no completed
+  // extractions/providers/parse in the window — otherwise an integration that's
+  // stuck in-progress (e.g. a huge pending backlog) silently vanishes from the
+  // table and its "extracting/parsing now" status is lost.
+  for (const k of inputs.extractingNowTypes) if (!k.includes("-")) names.add(k);
+  for (const k of inputs.parsingNowTypes) if (!k.includes("-")) names.add(k);
 
   const rankSev: Record<Severity, number> = { critical: 0, warning: 1, ok: 2 };
   const rows: IntegrationHealth[] = [...names].map((integration) => {
