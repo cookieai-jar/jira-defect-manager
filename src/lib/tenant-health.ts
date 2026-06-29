@@ -232,6 +232,23 @@ interface FleetInputs {
   alertsByTenant: Map<string, TenantAlert[]>;
   /** Per-tenant pending extract-queue depth (backlog). */
   pendingByTenant?: Map<string, number>;
+  /** Per-tenant prior health-score history (oldest→newest), for trend + delta. */
+  historyByTenant?: Map<string, Array<{ t: string; score: number }>>;
+}
+
+/**
+ * PURE. Recent scores (incl. current) capped to the last `cap` points, plus the
+ * delta vs the OLDEST POINT SHOWN — so the badge and the sparkline always share a
+ * baseline (delta = current − trend[0], never an off-screen point).
+ */
+export function trendAndDelta(
+  history: Array<{ t: string; score: number }>,
+  current: number,
+  cap = 24,
+): { trend: number[]; healthDelta: number | null } {
+  const trend = [...history.map((h) => h.score), current].slice(-cap);
+  const healthDelta = trend.length > 1 ? current - trend[0] : null;
+  return { trend, healthDelta };
 }
 
 /**
@@ -311,6 +328,13 @@ export function buildFleetSummaries(
         ? `${extractionErrors} extraction error${extractionErrors === 1 ? "" : "s"}`
         : null;
     const displayName = resolveName(tenant);
+    const score = scoreFromSignals(
+      unhealthyWeight,
+      universe.size,
+      infraFiring.filter((a) => a.severity === "critical").length,
+      infraFiring.filter((a) => a.severity === "warning").length,
+    );
+    const { trend, healthDelta } = trendAndDelta(inputs.historyByTenant?.get(tenant) ?? [], score);
     return {
       tenant,
       displayName,
@@ -320,16 +344,13 @@ export function buildFleetSummaries(
       activeAlerts: firing.length,
       criticalAlerts,
       warningAlerts,
-      healthScore: scoreFromSignals(
-        unhealthyWeight,
-        universe.size,
-        infraFiring.filter((a) => a.severity === "critical").length,
-        infraFiring.filter((a) => a.severity === "warning").length,
-      ),
+      healthScore: score,
       severity: worstFiringSeverity(alerts),
       topIssue,
       whiteGlove: isWhiteGlove(tenant),
       pendingExtractJobs: Math.round(inputs.pendingByTenant?.get(tenant) ?? 0),
+      trend,
+      healthDelta,
     };
   });
 
@@ -707,6 +728,16 @@ export async function buildTenantReport(
 
   const totalErrors = [...extractionErrors.values()].reduce((n, v) => n + v, 0);
 
+  // Health-score history (persisted by the fleet computation), for the trend chart.
+  let healthHistory: TenantHealthReport["healthHistory"] = [];
+  try {
+    const dbMod = await import("@/lib/db");
+    const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    healthHistory = dbMod.listHealthSnapshots(tenant, since);
+  } catch (e) {
+    console.warn(`[tenant-health] health history load failed for ${tenant}:`, e instanceof Error ? e.message : e);
+  }
+
   return {
     tenant,
     displayName,
@@ -735,6 +766,7 @@ export async function buildTenantReport(
     errorClassification: classifyErrors(alerts),
     jiraTickets,
     healthScore: computeHealthScore(integrations, alerts),
+    healthHistory,
     topIssues: buildTopIssues(integrations, alerts),
     totals: {
       integrations: integrations.length,
@@ -793,15 +825,21 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
   }
 
   const customers = await fetchCustomerNames();
-  // White-glove (P0) customers — the close-watch list. Dynamic import keeps
-  // node:sqlite out of this module's static graph (so the pure helpers stay
-  // unit-testable without a DB).
+  const generatedAt = new Date().toISOString();
+  // White-glove customers + health-score history. Dynamic import keeps node:sqlite
+  // out of this module's static graph (so the pure helpers stay unit-testable).
   let whiteGloveKeys = new Set<string>();
+  let historyByTenant = new Map<string, Array<{ t: string; score: number }>>();
+  let dbMod: typeof import("@/lib/db") | null = null;
   try {
-    const { listP0 } = await import("@/lib/db");
-    whiteGloveKeys = new Set(listP0().map((c) => normalizeKey(c.name)).filter(Boolean));
+    dbMod = await import("@/lib/db");
+    whiteGloveKeys = new Set(dbMod.listP0().map((c) => normalizeKey(c.name)).filter(Boolean));
+    // 48h window: the fleet sparkline caps at 24 points, so a tighter scan avoids
+    // materializing the full 7d × all-tenants set on this hot path.
+    const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    historyByTenant = dbMod.snapshotsByTenantSince(since);
   } catch (e) {
-    console.warn("[tenant-health] white-glove list failed:", e instanceof Error ? e.message : e);
+    console.warn("[tenant-health] white-glove/history load failed:", e instanceof Error ? e.message : e);
   }
   // Match on the REAL customer name (override or customer-field match), never the
   // prettified-slug fallback — otherwise an unmatched slug could spuriously match
@@ -812,12 +850,31 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
     return matched != null && whiteGloveKeys.has(normalizeKey(matched));
   };
   const tenants = buildFleetSummaries(
-    { extractionRows, errorRows, failingRows, alertsByTenant, pendingByTenant },
+    { extractionRows, errorRows, failingRows, alertsByTenant, pendingByTenant, historyByTenant },
     makeNameResolver(customers),
     isWhiteGlove,
   );
+
+  // Record a snapshot per tenant, throttled to ~hourly so frequent page loads
+  // don't spam points; prune to a 30-day window. Best-effort.
+  try {
+    if (dbMod && sources.grafanaMetrics && tenants.length > 0) {
+      const last = dbMod.latestSnapshotTs();
+      const THROTTLE_MS = 50 * 60 * 1000;
+      if (!last || Date.now() - new Date(last).getTime() > THROTTLE_MS) {
+        dbMod.recordHealthSnapshots(
+          tenants.map((t) => ({ tenant: t.tenant, score: t.healthScore })),
+          generatedAt,
+        );
+        dbMod.pruneHealthSnapshots(new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString());
+      }
+    }
+  } catch (e) {
+    console.warn("[tenant-health] snapshot write failed:", e instanceof Error ? e.message : e);
+  }
+
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     windowHours,
     tenants,
     totals: {

@@ -45,6 +45,7 @@ import type {
 } from "@/types/tenant";
 import { groupTicketsByProject, type ProjectTicketGroup } from "@/lib/tenant-jira";
 import { signalsFingerprint } from "@/lib/rca-core";
+import { Sparkline } from "@/components/sparkline";
 
 interface ReportResponse {
   report: TenantHealthReport | null;
@@ -425,6 +426,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
                   </div>
                 </div>
               </div>
+              <HealthTrendBlock history={report.healthHistory} current={report.healthScore} />
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] uppercase tracking-wide text-fg-subtle mb-1.5">
                   Top issues
@@ -1045,6 +1047,48 @@ function LogsLink({ href, label = "View logs", className }: { href: string | nul
     >
       <ScrollText className="h-3.5 w-3.5" /> {label}
     </a>
+  );
+}
+
+function HealthTrendBlock({
+  history,
+  current,
+}: {
+  history: { t: string; score: number }[];
+  current: number;
+}) {
+  // Trend = recent snapshots + the live score, capped for sane density; delta vs
+  // the oldest point SHOWN (so the number matches the line).
+  const scores = [...history.map((h) => h.score), current].slice(-48);
+  const delta = scores.length > 1 ? current - scores[0] : null;
+  return (
+    <div className="shrink-0 sm:border-l sm:border-border sm:pl-6">
+      <div className="text-[11px] uppercase tracking-wide text-fg-subtle">Health over time</div>
+      {scores.length < 2 ? (
+        <p className="mt-2 text-xs text-fg-subtle max-w-[12rem]">
+          Collecting history — a point is recorded each time the fleet view refreshes (~hourly).
+        </p>
+      ) : (
+        <div className="mt-1.5 flex items-center gap-3">
+          <Sparkline values={scores} width={120} height={32} className="text-accent" />
+          <div className="text-xs">
+            {delta != null && delta !== 0 ? (
+              <div
+                className={cn("font-mono font-semibold", delta > 0 ? "text-success" : "text-danger")}
+                title="vs the earliest sample shown"
+              >
+                {delta > 0 ? "▲" : "▼"} {Math.abs(delta)}
+              </div>
+            ) : (
+              <div className="font-mono text-fg-subtle">flat</div>
+            )}
+            <div className="text-[10px] text-fg-subtle">
+              {scores.length} pts · {Math.min(...scores)}–{Math.max(...scores)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

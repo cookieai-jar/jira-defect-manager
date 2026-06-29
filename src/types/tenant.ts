@@ -321,6 +321,10 @@ export interface FleetTenantSummary {
   whiteGlove: boolean;
   /** Extract jobs waiting in the scheduling queue (backlog depth). */
   pendingExtractJobs: number;
+  /** Recent health scores oldest→newest (incl. the current one), for a sparkline. */
+  trend: number[];
+  /** Current score minus the oldest score in the trend window; null with no history. */
+  healthDelta: number | null;
 }
 
 /** The fleet overview across all tenants. */
@@ -374,6 +378,8 @@ export interface TenantHealthReport {
   jiraTickets: TenantJiraTicket[];
   /** Composite 0-100 health score; higher = healthier. */
   healthScore: number;
+  /** Health-score history (oldest→newest) from persisted snapshots, for the trend chart. */
+  healthHistory: { t: string; score: number }[];
   /** Ranked top issues (for the header + overview). */
   topIssues: string[];
   /** Headline totals for the summary stats row. */

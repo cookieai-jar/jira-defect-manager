@@ -19,6 +19,7 @@ import {
   Star,
 } from "lucide-react";
 import type { FleetReport, FleetTenantSummary, Severity } from "@/types/tenant";
+import { Sparkline } from "@/components/sparkline";
 
 interface FleetResponse {
   report: FleetReport | null;
@@ -364,6 +365,21 @@ function TenantTable({
   );
 }
 
+/** ▲/▼ health-score change vs the oldest point in the trend window. */
+function DeltaBadge({ delta }: { delta: number | null }) {
+  if (delta == null || delta === 0) return null;
+  const up = delta > 0;
+  return (
+    <span
+      className={cn("inline-flex items-center text-[10px] font-mono tabular-nums", up ? "text-success" : "text-danger")}
+      title={`${up ? "+" : ""}${delta} vs the earliest sample shown`}
+    >
+      {up ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+      {Math.abs(delta)}
+    </span>
+  );
+}
+
 function SortHeader({
   label,
   active,
@@ -449,17 +465,23 @@ function TenantRow({
         </Link>
       </td>
       <td className="px-3 py-2">
-        <div className="flex items-center justify-end gap-2">
-          <span className={cn("font-mono text-sm tabular-nums", HEALTH_TEXT[tone])}>
-            {t.healthScore}
-            <span className="text-fg-subtle">/100</span>
-          </span>
-          <span className="h-1.5 w-16 rounded-full bg-bg-muted overflow-hidden shrink-0">
-            <span
-              className={cn("block h-full rounded-full", HEALTH_BAR[tone])}
-              style={{ width: `${Math.max(0, Math.min(100, t.healthScore))}%` }}
-            />
-          </span>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center justify-end gap-2">
+            <span className={cn("font-mono text-sm tabular-nums", HEALTH_TEXT[tone])}>
+              {t.healthScore}
+              <span className="text-fg-subtle">/100</span>
+            </span>
+            <DeltaBadge delta={t.healthDelta} />
+            <span className="h-1.5 w-16 rounded-full bg-bg-muted overflow-hidden shrink-0">
+              <span
+                className={cn("block h-full rounded-full", HEALTH_BAR[tone])}
+                style={{ width: `${Math.max(0, Math.min(100, t.healthScore))}%` }}
+              />
+            </span>
+          </div>
+          {t.trend.length >= 2 && (
+            <Sparkline values={t.trend} className={cn(HEALTH_TEXT[tone], "opacity-80")} />
+          )}
         </div>
       </td>
       <td className="px-3 py-2">

@@ -110,6 +110,16 @@ export function db(): DatabaseSync {
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Tenant Health: append-only per-tenant health-score snapshots, recorded
+    -- (throttled ~hourly) on each fleet computation. Powers trend sparklines +
+    -- deltas. Pruned to a rolling window.
+    CREATE TABLE IF NOT EXISTS health_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      ts TEXT NOT NULL
+    );
+
     -- Tenant Health: tenants the user has starred to watch (manual watch-list,
     -- separate from the configured white-glove customers).
     CREATE TABLE IF NOT EXISTS starred_tenants (
@@ -141,6 +151,7 @@ export function db(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_analyses_scope ON analyses(scope);
     CREATE INDEX IF NOT EXISTS idx_reports_scope_id ON reports(scope, id DESC);
     CREATE INDEX IF NOT EXISTS idx_p0_scope ON p0_customers(scope);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_health_snapshots_tenant_ts ON health_snapshots(tenant, ts);
   `);
 
   _db = conn;
@@ -467,4 +478,60 @@ export function starTenant(tenant: string): void {
 
 export function unstarTenant(tenant: string): void {
   db().prepare(`DELETE FROM starred_tenants WHERE tenant = ?`).run(tenant);
+}
+
+// --- health snapshots (trend history) -----------------------------------------
+
+/** Bulk-insert one health-score snapshot per tenant at a shared timestamp. */
+export function recordHealthSnapshots(rows: Array<{ tenant: string; score: number }>, ts: string): void {
+  const conn = db();
+  // OR IGNORE: the (tenant, ts) unique index makes a same-timestamp re-write a no-op.
+  const stmt = conn.prepare(`INSERT OR IGNORE INTO health_snapshots (tenant, score, ts) VALUES (?, ?, ?)`);
+  conn.exec("BEGIN");
+  try {
+    for (const r of rows) stmt.run(r.tenant, Math.round(r.score), ts);
+    conn.exec("COMMIT");
+  } catch (e) {
+    conn.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Timestamp of the most recent snapshot run, or null. */
+export function latestSnapshotTs(): string | null {
+  const row = db().prepare(`SELECT ts FROM health_snapshots ORDER BY ts DESC LIMIT 1`).get() as
+    | { ts: string }
+    | undefined;
+  return row?.ts ?? null;
+}
+
+/** Score history for one tenant since `sinceIso` (ascending by time). */
+export function listHealthSnapshots(tenant: string, sinceIso?: string): Array<{ t: string; score: number }> {
+  const rows = sinceIso
+    ? (db()
+        .prepare(`SELECT ts, score FROM health_snapshots WHERE tenant = ? AND ts >= ? ORDER BY ts`)
+        .all(tenant, sinceIso) as { ts: string; score: number }[])
+    : (db()
+        .prepare(`SELECT ts, score FROM health_snapshots WHERE tenant = ? ORDER BY ts`)
+        .all(tenant) as { ts: string; score: number }[]);
+  return rows.map((r) => ({ t: r.ts, score: r.score }));
+}
+
+/** All snapshots since `sinceIso`, grouped per tenant (for fleet sparklines). */
+export function snapshotsByTenantSince(sinceIso: string): Map<string, Array<{ t: string; score: number }>> {
+  const rows = db()
+    .prepare(`SELECT tenant, ts, score FROM health_snapshots WHERE ts >= ? ORDER BY ts`)
+    .all(sinceIso) as { tenant: string; ts: string; score: number }[];
+  const m = new Map<string, Array<{ t: string; score: number }>>();
+  for (const r of rows) {
+    const list = m.get(r.tenant) ?? [];
+    list.push({ t: r.ts, score: r.score });
+    m.set(r.tenant, list);
+  }
+  return m;
+}
+
+/** Delete snapshots older than `beforeIso` (rolling-window prune). */
+export function pruneHealthSnapshots(beforeIso: string): void {
+  db().prepare(`DELETE FROM health_snapshots WHERE ts < ?`).run(beforeIso);
 }

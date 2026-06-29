@@ -295,7 +295,26 @@ describe("aggregateErrorReasons", () => {
   });
 });
 
-import { buildFleetSummaries, scoreFromSignals } from "@/lib/tenant-health";
+import { buildFleetSummaries, scoreFromSignals, trendAndDelta } from "@/lib/tenant-health";
+
+describe("trendAndDelta", () => {
+  it("appends the current score and computes delta vs the oldest point", () => {
+    const r = trendAndDelta([{ t: "a", score: 80 }, { t: "b", score: 60 }], 50);
+    expect(r.trend).toEqual([80, 60, 50]);
+    expect(r.healthDelta).toBe(-30); // 50 - 80
+  });
+  it("caps the trend and measures delta vs the oldest point SHOWN (not off-screen)", () => {
+    const hist = Array.from({ length: 40 }, (_, i) => ({ t: `${i}`, score: i }));
+    const r = trendAndDelta(hist, 100, 5); // scores = [0..39, 100]; last 5
+    expect(r.trend).toEqual([36, 37, 38, 39, 100]);
+    expect(r.healthDelta).toBe(64); // 100 - 36 (oldest SHOWN), not 100 - 0
+  });
+  it("delta is null with no history (current is the only point)", () => {
+    const r = trendAndDelta([], 70);
+    expect(r.trend).toEqual([70]);
+    expect(r.healthDelta).toBeNull();
+  });
+});
 
 describe("scoreFromSignals", () => {
   it("is proportional to the fraction of unhealthy integrations", () => {
