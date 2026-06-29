@@ -319,6 +319,8 @@ export interface FleetTenantSummary {
   topIssue: string | null;
   /** True when this tenant maps to a configured white-glove (P0) customer. */
   whiteGlove: boolean;
+  /** Extract jobs waiting in the scheduling queue (backlog depth). */
+  pendingExtractJobs: number;
 }
 
 /** The fleet overview across all tenants. */
@@ -383,6 +385,8 @@ export interface TenantHealthReport {
     datasources: number | null;
     extractionErrors: number;
     activeAlerts: number;
+    /** Extract jobs waiting in the scheduling queue (backlog depth). */
+    pendingExtractJobs: number;
   };
   /** Per-source availability for partial-data banners. */
   sources: { grafanaMetrics: boolean; grafanaAlerts: boolean; jira: boolean; loki: boolean };

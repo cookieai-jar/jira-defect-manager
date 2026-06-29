@@ -230,6 +230,8 @@ interface FleetInputs {
   failingRows: Array<{ tenant: string; agent: string; value: number }>;
   /** Per-tenant alerts. */
   alertsByTenant: Map<string, TenantAlert[]>;
+  /** Per-tenant pending extract-queue depth (backlog). */
+  pendingByTenant?: Map<string, number>;
 }
 
 /**
@@ -327,6 +329,7 @@ export function buildFleetSummaries(
       severity: worstFiringSeverity(alerts),
       topIssue,
       whiteGlove: isWhiteGlove(tenant),
+      pendingExtractJobs: Math.round(inputs.pendingByTenant?.get(tenant) ?? 0),
     };
   });
 
@@ -528,6 +531,7 @@ export async function buildTenantReport(
   let freshnessByType = new Map<string, number>();
   let lagByType = new Map<string, number>();
   let extractingNowTypes = new Set<string>();
+  let pendingExtractJobs = 0;
   let graphSize: TenantHealthReport["graphSize"] = {
     nodes: null,
     edges: null,
@@ -535,7 +539,7 @@ export async function buildTenantReport(
     topEdgeTypes: [],
   };
   try {
-    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow, uptime, errReasons, freshness, lag, queueExtract, neoNodes, neoEdges, neoNodeType, neoEdgeType] = await Promise.all([
+    const [ext, err, dur, tasks, writes, dsCount, outdated, parsingNow, uptime, errReasons, freshness, lag, queueExtract, queuePending, neoNodes, neoEdges, neoNodeType, neoEdgeType] = await Promise.all([
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_extraction_errors_total${sel}[${w}]))`),
       queryInstant(`sum by (agent_type) (increase(veza_platform_parser_task_duration_ms_total${sel}[${w}]))`),
@@ -557,6 +561,8 @@ export async function buildTenantReport(
       queryInstant(`time() - max by (agent_type) (cookie_platform_scheduling_extract_jobs_pending_oldest_time_ms${sel}) / 1000`),
       // running now: in-progress extract jobs, per integration.
       queryInstant(`sum by (agent_type) (cookie_platform_scheduling_queue_size{state="in-progress", stage="extract", ${selBare}})`),
+      // backlog: extract jobs waiting in the queue (tenant-wide).
+      queryInstant(`sum(cookie_platform_scheduling_queue_size{state="pending", stage="extract", ${selBare}})`),
       // true graph size (per tenant).
       queryInstant(`sum(neo4j_node_count${sel})`),
       queryInstant(`sum(neo4j_edge_count${sel})`),
@@ -597,6 +603,7 @@ export async function buildTenantReport(
     extractingNowTypes = new Set(
       queueExtract.filter((r) => r.value >= 1 && r.metric.agent_type).map((r) => r.metric.agent_type),
     );
+    pendingExtractJobs = queuePending.length > 0 ? Math.round(Math.max(0, queuePending[0].value)) : 0;
     graphSize = {
       nodes: neoNodes.length > 0 ? Math.round(neoNodes[0].value) : null,
       edges: neoEdges.length > 0 ? Math.round(neoEdges[0].value) : null,
@@ -735,6 +742,7 @@ export async function buildTenantReport(
       datasources,
       extractionErrors: Math.round(totalErrors),
       activeAlerts: alerts.filter((a) => a.state === "firing").length,
+      pendingExtractJobs,
     },
     sources,
   };
@@ -753,20 +761,24 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
   let extractionRows: Array<{ tenant: string; agent: string; value: number }> = [];
   let errorRows: Array<{ tenant: string; agent: string; value: number }> = [];
   let failingRows: Array<{ tenant: string; agent: string; value: number }> = [];
+  const pendingByTenant = new Map<string, number>();
   try {
     const toRows = (rows: Awaited<ReturnType<typeof queryInstant>>) =>
       rows
         .filter((r) => r.metric.tenant_id)
         .map((r) => ({ tenant: r.metric.tenant_id, agent: r.metric.agent_type ?? "?", value: r.value }));
-    const [ext, err, failing] = await Promise.all([
+    const [ext, err, failing, pending] = await Promise.all([
       queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_total[${w}]))`),
       queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_errors_total[${w}]))`),
       // authoritative currently-failing datasources (same gauge the detail page weights)
       queryInstant(`sum by (tenant_id, agent_type) (cookie_platform_scheduling_error_reasons{stage="extract"})`),
+      // backlog: pending extract-queue depth per tenant
+      queryInstant(`sum by (tenant_id) (cookie_platform_scheduling_queue_size{state="pending", stage="extract"})`),
     ]);
     extractionRows = toRows(ext);
     errorRows = toRows(err);
     failingRows = toRows(failing);
+    for (const r of pending) if (r.metric.tenant_id) pendingByTenant.set(r.metric.tenant_id, r.value);
     sources.grafanaMetrics = true;
   } catch (e) {
     console.warn("[tenant-health] fleet metrics query failed:", e instanceof Error ? e.message : e);
@@ -800,7 +812,7 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
     return matched != null && whiteGloveKeys.has(normalizeKey(matched));
   };
   const tenants = buildFleetSummaries(
-    { extractionRows, errorRows, failingRows, alertsByTenant },
+    { extractionRows, errorRows, failingRows, alertsByTenant, pendingByTenant },
     makeNameResolver(customers),
     isWhiteGlove,
   );

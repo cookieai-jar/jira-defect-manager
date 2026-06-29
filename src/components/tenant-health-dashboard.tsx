@@ -446,7 +446,7 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
           </Card>
 
           {/* 3. Summary stat tiles */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <Stat
               icon={<Boxes className="h-4 w-4 text-accent" />}
               label="Integrations"
@@ -475,6 +475,13 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
               label="Active alerts"
               value={report.totals.activeAlerts}
               tone={report.totals.activeAlerts > 0 ? "warning" : undefined}
+            />
+            <Stat
+              icon={<Inbox className="h-4 w-4 text-warning" />}
+              label="Extract backlog"
+              hint="jobs pending in queue"
+              value={report.totals.pendingExtractJobs}
+              tone={report.totals.pendingExtractJobs > 0 ? "warning" : undefined}
             />
           </div>
 

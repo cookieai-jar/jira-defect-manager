@@ -25,7 +25,7 @@ interface FleetResponse {
   error?: string;
 }
 
-type SortKey = "health" | "alerts" | "extractions";
+type SortKey = "health" | "alerts" | "extractions" | "backlog";
 
 const SEVERITY_DOT: Record<Severity, string> = {
   critical: "bg-danger",
@@ -125,7 +125,9 @@ export function TenantFleetDashboard() {
         ? t.healthScore
         : sort.key === "alerts"
           ? t.activeAlerts
-          : t.extractions;
+          : sort.key === "backlog"
+            ? t.pendingExtractJobs
+            : t.extractions;
     const sorted = [...filtered].sort((a, b) => valueOf(a) - valueOf(b));
     if (sort.dir === "desc") sorted.reverse();
     return sorted;
@@ -334,6 +336,11 @@ function TenantTable({
             )}
             <th className="text-right font-medium px-3 py-2">Errors</th>
             {sortable ? (
+              <SortHeader label="Backlog" active={sort?.key === "backlog" ? sort.dir : null} onClick={() => onToggleSort!("backlog")} />
+            ) : (
+              <th className="text-right font-medium px-3 py-2">Backlog</th>
+            )}
+            {sortable ? (
               <SortHeader label="Alerts" active={sort?.key === "alerts" ? sort.dir : null} onClick={() => onToggleSort!("alerts")} />
             ) : (
               <th className="text-right font-medium px-3 py-2">Alerts</th>
@@ -476,6 +483,15 @@ function TenantRow({
         )}
       >
         {t.extractionErrors.toLocaleString()}
+      </td>
+      <td
+        className={cn(
+          "px-3 py-2 text-right font-mono",
+          t.pendingExtractJobs > 0 ? "text-warning" : "text-fg-subtle",
+        )}
+        title="Extract jobs waiting in the queue"
+      >
+        {t.pendingExtractJobs.toLocaleString()}
       </td>
       <td className="px-3 py-2 text-right">
         {t.activeAlerts > 0 ? (
