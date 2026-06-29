@@ -110,6 +110,13 @@ export function db(): DatabaseSync {
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Tenant Health: tenants the user has starred to watch (manual watch-list,
+    -- separate from the configured white-glove customers).
+    CREATE TABLE IF NOT EXISTS starred_tenants (
+      tenant TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     -- Tenant Health: persisted root-cause analyses, one per (tenant, integration).
     -- Re-running an analysis upserts. The result JSON carries the signals
     -- fingerprint used to flag staleness against the live failure picture.
@@ -442,4 +449,22 @@ export function deleteRcaResults(tenant: string, integration?: string): void {
   } else {
     db().prepare(`DELETE FROM rca_results WHERE tenant = ?`).run(tenant);
   }
+}
+
+/** Tenant slugs the user has starred (manual watch-list). */
+export function listStarredTenants(): string[] {
+  const rows = db()
+    .prepare(`SELECT tenant FROM starred_tenants ORDER BY created_at`)
+    .all() as { tenant: string }[];
+  return rows.map((r) => r.tenant);
+}
+
+export function starTenant(tenant: string): void {
+  db().prepare(
+    `INSERT INTO starred_tenants (tenant) VALUES (?) ON CONFLICT(tenant) DO NOTHING`,
+  ).run(tenant);
+}
+
+export function unstarTenant(tenant: string): void {
+  db().prepare(`DELETE FROM starred_tenants WHERE tenant = ?`).run(tenant);
 }

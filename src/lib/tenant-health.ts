@@ -17,7 +17,14 @@ import type {
   TenantJiraTicket,
   ThresholdRule,
 } from "@/types/tenant";
-import { resolveDisplayName, makeNameResolver, fetchCustomerNames } from "@/lib/tenant-mapping";
+import {
+  resolveDisplayName,
+  makeNameResolver,
+  fetchCustomerNames,
+  normalizeKey,
+  matchCustomerName,
+  TENANT_NAME_OVERRIDES,
+} from "@/lib/tenant-mapping";
 import { extractionLogStats } from "@/lib/tenant-logs";
 import { connectorDetailUrl, tenantHealthDashboardUrl, lokiErrorLogsUrl } from "@/lib/tenant-grafana-links";
 
@@ -233,6 +240,8 @@ interface FleetInputs {
 export function buildFleetSummaries(
   inputs: FleetInputs,
   resolveName: (slug: string) => string = (s) => resolveDisplayName(s),
+  /** Whether a tenant slug maps to a white-glove customer (real match only — no prettify fallback). */
+  isWhiteGlove: (slug: string) => boolean = () => false,
 ): FleetTenantSummary[] {
   const extractionsByTenant = new Map<string, number>();
   const integrationsByTenant = new Map<string, Set<string>>();
@@ -299,9 +308,10 @@ export function buildFleetSummaries(
       : extractionErrors > 0
         ? `${extractionErrors} extraction error${extractionErrors === 1 ? "" : "s"}`
         : null;
+    const displayName = resolveName(tenant);
     return {
       tenant,
-      displayName: resolveName(tenant),
+      displayName,
       extractions: Math.round(extractionsByTenant.get(tenant) ?? 0),
       extractionErrors,
       integrations: universe.size,
@@ -316,6 +326,7 @@ export function buildFleetSummaries(
       ),
       severity: worstFiringSeverity(alerts),
       topIssue,
+      whiteGlove: isWhiteGlove(tenant),
     };
   });
 
@@ -770,9 +781,28 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
   }
 
   const customers = await fetchCustomerNames();
+  // White-glove (P0) customers — the close-watch list. Dynamic import keeps
+  // node:sqlite out of this module's static graph (so the pure helpers stay
+  // unit-testable without a DB).
+  let whiteGloveKeys = new Set<string>();
+  try {
+    const { listP0 } = await import("@/lib/db");
+    whiteGloveKeys = new Set(listP0().map((c) => normalizeKey(c.name)).filter(Boolean));
+  } catch (e) {
+    console.warn("[tenant-health] white-glove list failed:", e instanceof Error ? e.message : e);
+  }
+  // Match on the REAL customer name (override or customer-field match), never the
+  // prettified-slug fallback — otherwise an unmatched slug could spuriously match
+  // a white-glove name (e.g. slug "acme" → "Acme").
+  const isWhiteGlove = (slug: string): boolean => {
+    if (whiteGloveKeys.size === 0) return false;
+    const matched = TENANT_NAME_OVERRIDES[slug] ?? matchCustomerName(slug, customers);
+    return matched != null && whiteGloveKeys.has(normalizeKey(matched));
+  };
   const tenants = buildFleetSummaries(
     { extractionRows, errorRows, failingRows, alertsByTenant },
     makeNameResolver(customers),
+    isWhiteGlove,
   );
   return {
     generatedAt: new Date().toISOString(),

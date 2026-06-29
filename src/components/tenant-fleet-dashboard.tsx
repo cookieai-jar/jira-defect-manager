@@ -9,12 +9,14 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Crown,
   HeartPulse,
   Inbox,
   PlugZap,
   RefreshCw,
   Search,
   Server,
+  Star,
 } from "lucide-react";
 import type { FleetReport, FleetTenantSummary, Severity } from "@/types/tenant";
 
@@ -55,6 +57,7 @@ export function TenantFleetDashboard() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" } | null>(null);
+  const [starred, setStarred] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -74,6 +77,37 @@ export function TenantFleetDashboard() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Starred tenants (manual watch-list) — independent of the report.
+  useEffect(() => {
+    fetch("/api/tenant/starred")
+      .then((r) => r.json())
+      .then((d: { starred?: string[] }) => setStarred(new Set(d.starred ?? [])))
+      .catch(() => {});
+  }, []);
+
+  const toggleStar = useCallback(
+    (tenant: string) => {
+      // Decide + fire the request OUTSIDE the state updater — updaters must be
+      // pure (React double-invokes them in StrictMode, which would double-fire).
+      const willStar = !starred.has(tenant);
+      setStarred((prev) => {
+        const next = new Set(prev);
+        if (willStar) next.add(tenant);
+        else next.delete(tenant);
+        return next;
+      });
+      const req = willStar
+        ? fetch("/api/tenant/starred", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tenant }),
+          })
+        : fetch(`/api/tenant/starred?tenant=${encodeURIComponent(tenant)}`, { method: "DELETE" });
+      req.catch(() => {});
+    },
+    [starred],
+  );
 
   const rows = useMemo(() => {
     const base = report?.tenants ?? [];
@@ -96,6 +130,17 @@ export function TenantFleetDashboard() {
     if (sort.dir === "desc") sorted.reverse();
     return sorted;
   }, [report, query, sort]);
+
+  // Pinned watch-lists (kept in the API's worst-health-first order, not filtered
+  // by search — they're the things you always want visible).
+  const whiteGloveRows = useMemo(
+    () => (report?.tenants ?? []).filter((t) => t.whiteGlove),
+    [report],
+  );
+  const starredRows = useMemo(
+    () => (report?.tenants ?? []).filter((t) => starred.has(t.tenant) && !t.whiteGlove),
+    [report, starred],
+  );
 
   const toggleSort = useCallback((key: SortKey) => {
     setSort((prev) => {
@@ -161,6 +206,30 @@ export function TenantFleetDashboard() {
             />
           </div>
 
+          {/* White-glove customers — the configured close-watch accounts */}
+          {whiteGloveRows.length > 0 && (
+            <FleetSection
+              icon={<Crown className="h-4 w-4 text-warning" />}
+              title="White-glove customers"
+              subtitle="configured close-watch accounts"
+              count={whiteGloveRows.length}
+            >
+              <TenantTable rows={whiteGloveRows} starred={starred} onToggleStar={toggleStar} router={router} />
+            </FleetSection>
+          )}
+
+          {/* Starred — the manual watch-list */}
+          {starredRows.length > 0 && (
+            <FleetSection
+              icon={<Star className="h-4 w-4 fill-warning text-warning" />}
+              title="Starred"
+              subtitle="tenants you're watching"
+              count={starredRows.length}
+            >
+              <TenantTable rows={starredRows} starred={starred} onToggleStar={toggleStar} router={router} />
+            </FleetSection>
+          )}
+
           {/* Search */}
           <div className="relative max-w-xs">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-fg-subtle" />
@@ -173,52 +242,117 @@ export function TenantFleetDashboard() {
             />
           </div>
 
-          {/* Tenant table */}
-          <Card>
-            <CardBody className="px-0 py-0">
-              {rows.length === 0 ? (
-                <p className="text-sm text-fg-muted px-4 py-8 text-center">
-                  {query ? "No tenants match your search." : "No tenants reported."}
-                </p>
-              ) : (
-                <div className="overflow-auto scroll-thin">
-                  <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-bg-card z-10">
-                      <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
-                        <th className="text-left font-medium px-4 py-2">Tenant</th>
-                        <SortHeader
-                          label="Health"
-                          active={sort?.key === "health" ? sort.dir : null}
-                          onClick={() => toggleSort("health")}
-                        />
-                        <th className="text-center font-medium px-3 py-2">Sev</th>
-                        <th className="text-right font-medium px-3 py-2">Integrations</th>
-                        <SortHeader
-                          label="Extractions"
-                          active={sort?.key === "extractions" ? sort.dir : null}
-                          onClick={() => toggleSort("extractions")}
-                        />
-                        <th className="text-right font-medium px-3 py-2">Errors</th>
-                        <SortHeader
-                          label="Alerts"
-                          active={sort?.key === "alerts" ? sort.dir : null}
-                          onClick={() => toggleSort("alerts")}
-                        />
-                        <th className="text-left font-medium px-4 py-2">Top issue</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((t) => (
-                        <TenantRow key={t.tenant} t={t} router={router} />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardBody>
-          </Card>
+          {/* Overall tenant list */}
+          <FleetSection title="All tenants" count={rows.length}>
+            {rows.length === 0 ? (
+              <p className="text-sm text-fg-muted px-4 py-8 text-center">
+                {query ? "No tenants match your search." : "No tenants reported."}
+              </p>
+            ) : (
+              <TenantTable
+                rows={rows}
+                starred={starred}
+                onToggleStar={toggleStar}
+                router={router}
+                sort={sort}
+                onToggleSort={toggleSort}
+              />
+            )}
+          </FleetSection>
         </div>
       )}
+    </div>
+  );
+}
+
+function FleetSection({
+  icon,
+  title,
+  subtitle,
+  count,
+  children,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-2 px-0.5">
+        <h2 className="text-sm font-semibold text-fg flex items-center gap-1.5">
+          {icon}
+          {title}
+        </h2>
+        <span className="text-[11px] text-fg-subtle">
+          {count}
+          {subtitle ? ` · ${subtitle}` : ""}
+        </span>
+      </div>
+      <Card>
+        <CardBody className="px-0 py-0">{children}</CardBody>
+      </Card>
+    </section>
+  );
+}
+
+function TenantTable({
+  rows,
+  starred,
+  onToggleStar,
+  router,
+  sort,
+  onToggleSort,
+}: {
+  rows: FleetTenantSummary[];
+  starred: Set<string>;
+  onToggleStar: (tenant: string) => void;
+  router: ReturnType<typeof useRouter>;
+  sort?: { key: SortKey; dir: "asc" | "desc" } | null;
+  onToggleSort?: (key: SortKey) => void;
+}) {
+  const sortable = !!onToggleSort;
+  return (
+    <div className="overflow-auto scroll-thin">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 bg-bg-card z-10">
+          <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
+            <th className="w-8 px-2 py-2" aria-label="Star" />
+            <th className="text-left font-medium px-4 py-2">Tenant</th>
+            {sortable ? (
+              <SortHeader label="Health" active={sort?.key === "health" ? sort.dir : null} onClick={() => onToggleSort!("health")} />
+            ) : (
+              <th className="text-right font-medium px-3 py-2">Health</th>
+            )}
+            <th className="text-center font-medium px-3 py-2">Sev</th>
+            <th className="text-right font-medium px-3 py-2">Integrations</th>
+            {sortable ? (
+              <SortHeader label="Extractions" active={sort?.key === "extractions" ? sort.dir : null} onClick={() => onToggleSort!("extractions")} />
+            ) : (
+              <th className="text-right font-medium px-3 py-2">Extractions</th>
+            )}
+            <th className="text-right font-medium px-3 py-2">Errors</th>
+            {sortable ? (
+              <SortHeader label="Alerts" active={sort?.key === "alerts" ? sort.dir : null} onClick={() => onToggleSort!("alerts")} />
+            ) : (
+              <th className="text-right font-medium px-3 py-2">Alerts</th>
+            )}
+            <th className="text-left font-medium px-4 py-2">Top issue</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((t) => (
+            <TenantRow
+              key={t.tenant}
+              t={t}
+              router={router}
+              starred={starred.has(t.tenant)}
+              onToggleStar={() => onToggleStar(t.tenant)}
+            />
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -256,9 +390,13 @@ function SortHeader({
 function TenantRow({
   t,
   router,
+  starred,
+  onToggleStar,
 }: {
   t: FleetTenantSummary;
   router: ReturnType<typeof useRouter>;
+  starred: boolean;
+  onToggleStar: () => void;
 }) {
   const href = `/tenants/${encodeURIComponent(t.tenant)}`;
   const tone = healthTone(t.healthScore);
@@ -267,14 +405,38 @@ function TenantRow({
       onClick={() => router.push(href)}
       className="border-b border-border/60 last:border-0 hover:bg-bg-muted/40 transition-colors cursor-pointer"
     >
+      <td className="px-2 py-2">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleStar();
+          }}
+          title={starred ? "Unstar — remove from your watch-list" : "Star — add to your watch-list"}
+          aria-pressed={starred}
+          className={cn(
+            "inline-flex transition-colors",
+            starred ? "text-warning" : "text-fg-subtle/50 hover:text-warning",
+          )}
+        >
+          <Star className={cn("h-4 w-4", starred && "fill-warning")} />
+        </button>
+      </td>
       <td className="px-4 py-2">
         <Link
           href={href}
           onClick={(e) => e.stopPropagation()}
           className="block min-w-0 group"
         >
-          <div className="font-medium text-fg truncate group-hover:text-accent transition-colors">
-            {t.displayName}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="font-medium text-fg truncate group-hover:text-accent transition-colors">
+              {t.displayName}
+            </span>
+            {t.whiteGlove && (
+              <span title="White-glove customer" className="inline-flex shrink-0">
+                <Crown className="h-3 w-3 text-warning" />
+              </span>
+            )}
           </div>
           <div className="font-mono text-[11px] text-fg-subtle truncate">{t.tenant}</div>
         </Link>

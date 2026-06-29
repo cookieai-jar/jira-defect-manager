@@ -317,6 +317,8 @@ export interface FleetTenantSummary {
   severity: Severity;
   /** Single worst issue line, or null when healthy. */
   topIssue: string | null;
+  /** True when this tenant maps to a configured white-glove (P0) customer. */
+  whiteGlove: boolean;
 }
 
 /** The fleet overview across all tenants. */

@@ -11,21 +11,10 @@
 import { defaultModel, jsonCompletion } from "./anthropic";
 import { findTenantLogDatasource, errorSamplesByTypeQuery, normalizeErrorSignature } from "./tenant-logs";
 import { lokiLogLines } from "./grafana";
-import { safeCount, signalsFingerprint } from "./rca-core";
+import { safeCount, signalsFingerprint, isSafeIdentifier } from "./rca-core";
 import type { ErrorRcaResult, IntegrationErrorSignals } from "@/types/tenant";
 
-export { signalsFingerprint } from "./rca-core";
-
-/**
- * Tenant slugs and agent_types are lowercase alnum + hyphen/underscore. We
- * interpolate them into LogQL selectors (backtick/double-quote strings that
- * have NO escape mechanism), so a stray backtick/quote would let a caller break
- * out and read other namespaces. Validate before any query is built. PURE.
- */
-const SAFE_IDENT = /^[a-zA-Z0-9_-]{1,64}$/;
-export function isSafeIdentifier(s: string): boolean {
-  return SAFE_IDENT.test(s);
-}
+export { signalsFingerprint, isSafeIdentifier } from "./rca-core";
 
 /** Cap how much client-supplied context reaches the prompt (cost / injection surface). */
 const MAX_PROMPT_REASONS = 8;

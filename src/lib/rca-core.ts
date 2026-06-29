@@ -5,6 +5,16 @@
  */
 import type { IntegrationErrorSignals } from "@/types/tenant";
 
+/**
+ * Tenant slugs and agent_types are lowercase alnum + hyphen/underscore. They get
+ * interpolated into LogQL selectors and SQL — validate before use. Shared by the
+ * RCA and starred-tenant routes.
+ */
+const SAFE_IDENT = /^[a-zA-Z0-9_-]{1,64}$/;
+export function isSafeIdentifier(s: string): boolean {
+  return SAFE_IDENT.test(s);
+}
+
 /** Coerce a (possibly client-supplied) count to a safe non-negative integer. */
 export function safeCount(v: number): number {
   return Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;

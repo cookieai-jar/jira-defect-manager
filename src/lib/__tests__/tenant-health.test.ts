@@ -8,7 +8,7 @@ import {
   buildIntegrationHealth,
   integrationState,
 } from "@/lib/tenant-health";
-import { makeNameResolver } from "@/lib/tenant-mapping";
+import { makeNameResolver, matchCustomerName, normalizeKey } from "@/lib/tenant-mapping";
 import type { Severity, TenantAlert } from "@/types/tenant";
 
 function alert(over: Partial<TenantAlert> = {}): TenantAlert {
@@ -364,6 +364,28 @@ describe("buildFleetSummaries", () => {
     // alertonly has a critical alert -> lowest score -> first
     expect(rows[0].tenant).toBe("alertonly");
     expect(rows[0].severity).toBe("critical");
+  });
+
+  it("flags white-glove tenants via the predicate (by slug)", () => {
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]), (slug) => slug === "bcgprod");
+    expect(rows.find((r) => r.tenant === "bcgprod")!.whiteGlove).toBe(true);
+    expect(rows.find((r) => r.tenant === "healthyco")!.whiteGlove).toBe(false);
+  });
+  it("defaults whiteGlove to false when no predicate is provided", () => {
+    const rows = buildFleetSummaries(inputs, makeNameResolver(["BCG"]));
+    expect(rows.every((r) => r.whiteGlove === false)).toBe(true);
+  });
+  it("white-glove predicate matches the REAL customer name, not the prettify fallback", () => {
+    // Mirrors buildFleet's predicate: only a genuine customer match counts.
+    const customers = ["BCG"]; // no customer named "Acme"
+    const isWG = (keys: Set<string>) => (slug: string) => {
+      const m = matchCustomerName(slug, customers);
+      return m != null && keys.has(normalizeKey(m));
+    };
+    // "acme" prettifies to "Acme" but has NO customer match → must NOT be flagged
+    expect(isWG(new Set(["acme"]))("acme")).toBe(false);
+    // a real customer match to a white-glove name IS flagged (env suffix tolerated)
+    expect(isWG(new Set(["bcg"]))("bcgprod")).toBe(true);
   });
 
   it("healthyco with no alerts/errors scores 100", () => {
