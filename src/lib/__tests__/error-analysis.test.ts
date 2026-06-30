@@ -70,7 +70,6 @@ const signals: IntegrationErrorSignals = {
   freshnessSec: 14400,
   lagSec: 90000,
   topReasons: [{ reason: "AUTH_TOKEN_EXPIRED", errorClass: "user", count: 400 }],
-  topErrors: [],
 };
 
 describe("compactErrorContext", () => {
@@ -166,7 +165,6 @@ describe("signalsFingerprint (stale detection)", () => {
       { reason: "AUTH_TOKEN_EXPIRED", errorClass: "user", count: 400 },
       { reason: "INTERNAL", errorClass: "internal", count: 12 },
     ],
-    topErrors: [],
   };
   it("is stable across reorderings + drifting counts (the perma-stale trap)", () => {
     const drifted = {

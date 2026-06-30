@@ -57,8 +57,8 @@ describe("classifyErrors", () => {
 describe("computeHealthScore", () => {
   it("deducts for firing alerts and error'd integrations, clamped", () => {
     const integrations = [
-      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 2, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // 1 of 2 integrations failing (weight 1) -> integrationScore 50; infra alerts
     // 1 crit + 1 warn -> penalty 21; 50 - 21 = 29.
@@ -74,13 +74,13 @@ describe("computeHealthScore", () => {
   });
   it("reaches 0 only when integrations are fully failing", () => {
     const failing = [
-      { integration: "s3", providers: 1, extractionErrors: 9, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 3, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "critical" as Severity },
+      { integration: "s3", providers: 1, extractionErrors: 9, parseAvgMs: null, parseTasks: 0, state: "failing" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 3, freshnessSec: null, lagSec: null, topReasons: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "critical" as Severity },
     ];
     expect(computeHealthScore(failing, [])).toBe(0); // 1/1 failing -> 0
   });
   it("penalizes only infra alerts; integration-attached alerts are excluded (already in integration weight)", () => {
     const healthy = [
-      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
+      { integration: "okta", providers: 1, extractionErrors: 0, parseAvgMs: null, parseTasks: 0, state: "ok" as const, extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "ok" as Severity },
     ];
     // integration critical alert is ignored; only the infra warning penalizes -> 100 - 6 = 94
     expect(
@@ -95,7 +95,7 @@ describe("computeHealthScore", () => {
 describe("buildTopIssues", () => {
   it("orders critical-first, dedupes, and caps", () => {
     const issues = buildTopIssues(
-      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], topErrors: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" }],
+      [{ integration: "ad", providers: 0, extractionErrors: 5, parseAvgMs: null, parseTasks: 0, state: "failing", extractingNow: false, parsingNow: false, outdated: 0, failing: 0, freshnessSec: null, lagSec: null, topReasons: [], connectorUrl: null, logsUrl: null, alerts: [], breaches: [], severity: "warning" }],
       [
         alert({ severity: "warning", name: "ParseFailures", integration: "s3" }),
         alert({ severity: "critical", name: "ExtractionStuck", integration: "sharepoint", reason: "Tier24" }),
@@ -152,7 +152,6 @@ describe("buildIntegrationHealth", () => {
       parseTasks: new Map([["okta", 10], ["ad_base", 4], ["awsiam-okta", 5]]),
       alertsByIntegration: new Map([["s3", [alert({ severity: "warning", integration: "s3" })]]]),
       outdatedByType: new Map([["s3", 7]]),
-      topErrorsByType: new Map([["s3", [{ signature: "connect error", count: 14 }]]]),
       extractingNowTypes: new Set(["okta"]),
       parsingNowTypes: new Set(["s3"]),
       failingByType: new Map([["s3", 5]]),
@@ -183,7 +182,6 @@ describe("buildIntegrationHealth", () => {
     expect(s3.failing).toBe(5); // currently-failing datasources (gauge)
     expect(s3.lagSec).toBe(7200);
     expect(s3.topReasons).toEqual([{ reason: "EXTRACTION_PERMISSION_DENIED", errorClass: "user", count: 5 }]);
-    expect(s3.topErrors).toEqual([{ signature: "connect error", count: 14 }]);
     // alert warning + error_count>0 breach (default threshold) => warning
     expect(s3.severity).toBe("warning");
     expect(s3.extractionErrors).toBe(3);
@@ -205,7 +203,6 @@ describe("buildIntegrationHealth", () => {
       parseDurationMs: new Map(),
       parseTasks: new Map(),
       outdatedByType: new Map(),
-      topErrorsByType: new Map(),
       extractingNowTypes: new Set(),
       parsingNowTypes: new Set(),
       failingByType: new Map(),
@@ -234,7 +231,6 @@ describe("buildIntegrationHealth", () => {
       parseTasks: new Map(),
       alertsByIntegration: new Map(),
       outdatedByType: new Map(),
-      topErrorsByType: new Map(),
       extractingNowTypes: new Set(["okta"]),
       parsingNowTypes: new Set(["exchange_online"]),
       failingByType: new Map(),

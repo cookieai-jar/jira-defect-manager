@@ -154,8 +154,6 @@ export interface IntegrationHealth {
   lagSec: number | null;
   /** Top error_reasons (with internal/user class) for this integration, most frequent first. */
   topReasons: ErrorReason[];
-  /** Top recurring error signatures for this integration (most frequent first; Loki-derived, legacy). */
-  topErrors: ErrorSignature[];
   /** Deep link to the per-connector Grafana dashboard, or null when unconfigured. */
   connectorUrl: string | null;
   /** Deep link to this integration's error logs in Grafana Explore, or null when unconfigured. */
@@ -198,7 +196,6 @@ export interface IntegrationErrorSignals {
   freshnessSec: number | null;
   lagSec: number | null;
   topReasons: ErrorReason[];
-  topErrors: ErrorSignature[];
 }
 
 /** Claude's root-cause analysis for one failing integration. */

@@ -3,7 +3,6 @@ import { searchIssues } from "@/lib/jira";
 import { DEFAULT_THRESHOLDS, evaluateMetrics } from "@/lib/tenant-thresholds";
 import type {
   ErrorReason,
-  ErrorSignature,
   GraphTypeCount,
   FleetReport,
   FleetTenantSummary,
@@ -398,8 +397,6 @@ interface IntegrationInputs {
   alertsByIntegration: Map<string, TenantAlert[]>;
   /** Outdated-datasource count per integration (extraction lag); keys lowercased. */
   outdatedByType: Map<string, number>;
-  /** Top error signatures per integration. */
-  topErrorsByType: Map<string, ErrorSignature[]>;
   /** Integration types extracting right now (in-progress extract queue). */
   extractingNowTypes: Set<string>;
   /** Integration types parsing right now (recent parser task activity). */
@@ -463,7 +460,6 @@ export function buildIntegrationHealth(
       ...breaches.map((b) => b.severity),
     ]);
     const outdated = Math.round(inputs.outdatedByType.get(integration) ?? 0);
-    const topErrors = inputs.topErrorsByType.get(integration) ?? [];
     const failing = Math.round(inputs.failingByType.get(integration) ?? 0);
     const topReasons = inputs.topReasonsByType.get(integration) ?? [];
     const freshnessSec = inputs.freshnessByType.has(integration)
@@ -486,7 +482,6 @@ export function buildIntegrationHealth(
       freshnessSec,
       lagSec,
       topReasons,
-      topErrors,
       connectorUrl: inputs.connectorUrl(integration),
       logsUrl: inputs.logsUrl(integration),
       alerts,
@@ -663,7 +658,6 @@ export async function buildTenantReport(
   let providers = new Map<string, number>();
   let totalProviders: number | null = null;
   let hasProviderData = false;
-  let topErrorsByType = new Map<string, ErrorSignature[]>();
   let errorTimeline: TenantHealthReport["errorTimeline"] = [];
   let region: string | null = null;
   let logsDsUid: string | null = null;
@@ -677,7 +671,6 @@ export async function buildTenantReport(
       totalProviders = logs.totalProviders;
       hasProviderData = true;
       if (logs.errorByType.size > 0) extractionErrors = logs.errorByType;
-      topErrorsByType = logs.topErrorsByType;
       errorTimeline = logs.errorTimeline;
       region = logs.region;
       featureFlags = logs.featureFlags;
@@ -698,7 +691,6 @@ export async function buildTenantReport(
     parseTasks,
     alertsByIntegration,
     outdatedByType,
-    topErrorsByType,
     extractingNowTypes,
     parsingNowTypes,
     failingByType: errAgg?.failingByType ?? new Map(),

@@ -146,7 +146,6 @@ function toSignals(it: IntegrationHealth): IntegrationErrorSignals {
     freshnessSec: it.freshnessSec,
     lagSec: it.lagSec,
     topReasons: it.topReasons,
-    topErrors: it.topErrors,
   };
 }
 
@@ -830,12 +829,11 @@ function IntegrationRow({
   onAnalyze: () => void;
 }) {
   const topReasons = (it.topReasons ?? []).slice(0, 2);
-  const topErrors = it.topErrors.slice(0, 2);
   return (
     <tr className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30 transition-colors align-top">
       <td className="px-4 py-1.5 font-medium text-fg">
         <div>{it.integration}</div>
-        {topReasons.length > 0 ? (
+        {topReasons.length > 0 && (
           <div className="mt-0.5 space-y-0.5">
             {topReasons.map((r, i) => (
               <div
@@ -860,20 +858,6 @@ function IntegrationRow({
               </div>
             ))}
           </div>
-        ) : (
-          topErrors.length > 0 && (
-            <div className="mt-0.5 space-y-0.5">
-              {topErrors.map((e, i) => (
-                <div
-                  key={i}
-                  className="max-w-[22rem] truncate text-[11px] font-normal text-danger/80"
-                  title={`${e.signature} ×${e.count.toLocaleString()}`}
-                >
-                  {e.signature} <span className="text-fg-subtle">×{e.count.toLocaleString()}</span>
-                </div>
-              ))}
-            </div>
-          )
         )}
       </td>
       <td className="px-3 py-1.5">

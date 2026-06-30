@@ -48,7 +48,7 @@ describe("errorByTypeQuery", () => {
   });
 });
 
-import { normalizeErrorSignature, topErrorsByType, errorTimelineQuery, errorSamplesQuery } from "@/lib/tenant-logs";
+import { normalizeErrorSignature, errorTimelineQuery, errorSamplesQuery } from "@/lib/tenant-logs";
 
 describe("normalizeErrorSignature", () => {
   it("strips the [type - uuid] prefix and ids so the same failure collapses", () => {
@@ -60,27 +60,6 @@ describe("normalizeErrorSignature", () => {
   });
   it("collapses long numeric ids and whitespace", () => {
     expect(normalizeErrorSignature("rate limited after 1234567 attempts")).toBe("rate limited after <n> attempts");
-  });
-});
-
-describe("topErrorsByType", () => {
-  it("groups by datasource_type and ranks normalized signatures", () => {
-    const lines = [
-      JSON.stringify({ datasource_type: "azure_sql", error: "extract [azure_sql - 019d3047-9b3e-7ece-8418-8b6ffd9dafc1]: connect error: cannot reach host" }),
-      JSON.stringify({ datasource_type: "azure_sql", error: "extract [azure_sql - 019d3047-bbbb-7027-81ff-d5b3c843b983]: connect error: cannot reach host" }),
-      JSON.stringify({ datasource_type: "azure_sql", error: "extract [azure_sql - 019d3047-cccc-7027-81ff-d5b3c843b983]: permission denied" }),
-      JSON.stringify({ datasource_type: "s3", error: "throttled" }),
-      "not json",
-      JSON.stringify({ datasource_type: "s3" }), // no error -> skipped
-    ];
-    const m = topErrorsByType(lines, 2);
-    const azure = m.get("azure_sql")!;
-    expect(azure[0]).toEqual({ signature: "connect error: cannot reach host", count: 2 });
-    expect(azure[1].count).toBe(1);
-    expect(m.get("s3")).toEqual([{ signature: "throttled", count: 1 }]);
-  });
-  it("returns empty map for no parseable lines", () => {
-    expect(topErrorsByType(["x", "{}"]).size).toBe(0);
   });
 });
 

@@ -7,7 +7,6 @@ import {
   type LokiDatasource,
 } from "@/lib/grafana";
 import type {
-  ErrorSignature,
   ErrorTimelinePoint,
   TenantFeatureFlags,
 } from "@/types/tenant";
@@ -58,12 +57,9 @@ export function errorTimelineQuery(tenant: string, bucket = "1h"): string {
 }
 
 /**
- * LogQL: recent extraction-error log lines (parsed) for signature sampling.
- * NOTE: per-integration error *counts* (errorByType) come from a full
- * count_over_time and are exact; the *signatures* (topErrorsByType) come from a
- * capped tenant-wide sample of recent lines, so a low-volume integration may
- * show an error count with no signatures when noisier integrations fill the
- * sample. Counts and signatures therefore have different completeness.
+ * LogQL: recent extraction-error log lines (parsed). Used by the RCA analyzer
+ * (per-integration error samples incl. stacktrace via errorSamplesByTypeQuery)
+ * and the "View error logs" Grafana Explore links.
  */
 export function errorSamplesQuery(tenant: string): string {
   return `${tenantDpSelector(tenant)} |= \`${ERROR_LINE}\` | json`;
@@ -174,43 +170,6 @@ export function normalizeErrorSignature(msg: string): string {
 }
 
 /**
- * PURE. Group parsed error log lines by datasource_type and tally normalized
- * signatures, returning the top `perType` signatures per integration.
- */
-export function topErrorsByType(
-  lines: string[],
-  perType = 2,
-): Map<string, ErrorSignature[]> {
-  // type -> signature -> count
-  const acc = new Map<string, Map<string, number>>();
-  for (const raw of lines) {
-    let j: { datasource_type?: string; error?: string };
-    try {
-      j = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    const type = j.datasource_type;
-    const err = j.error;
-    if (!type || !err) continue;
-    const sig = normalizeErrorSignature(String(err));
-    if (!sig) continue;
-    if (!acc.has(type)) acc.set(type, new Map());
-    const m = acc.get(type)!;
-    m.set(sig, (m.get(sig) ?? 0) + 1);
-  }
-  const out = new Map<string, ErrorSignature[]>();
-  for (const [type, m] of acc) {
-    const sigs = [...m.entries()]
-      .map(([signature, count]) => ({ signature, count }))
-      .sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature))
-      .slice(0, perType);
-    out.set(type, sigs);
-  }
-  return out;
-}
-
-/**
  * Provider window is fixed and short (1h). Counting DISTINCT providers requires
  * grouping by provider_id; doing it for ALL integrations at once
  * (count by (datasource_type, provider_id) ...) blows Loki's 2000-series cap on
@@ -296,8 +255,6 @@ export interface ExtractionLogStats {
   totalProviders: number | null;
   /** Extraction-error-line count per datasource_type over `windowHours`. */
   errorByType: Map<string, number>;
-  /** Top error signatures per integration (datasource_type), from recent samples. */
-  topErrorsByType: Map<string, ErrorSignature[]>;
   /** Tenant-wide extraction-error counts over time (hourly buckets). */
   errorTimeline: ErrorTimelinePoint[];
   /** Hosting region derived from the regional Loki datasource. */
@@ -340,7 +297,6 @@ export async function extractionLogStats(
       providersByType: new Map(),
       totalProviders: null,
       errorByType: new Map(),
-      topErrorsByType: new Map(),
       errorTimeline: [],
       region: null,
       featureFlags: { current: [], changes: [] },
@@ -353,14 +309,13 @@ export async function extractionLogStats(
   const nowSec = Math.floor(Date.now() / 1000);
   const startSec = nowSec - windowHours * 3600;
   const flagsStartSec = nowSec - 30 * 24 * 3600; // feature-flag changes: look back 30d
-  const [total, error, perType, samples, timeline, flagLines, dpLines] = await Promise.all([
+  const [total, error, perType, timeline, flagLines, dpLines] = await Promise.all([
     lokiCountQuery(dsUid, totalProvidersQuery(tenant)).catch(() => []),
     lokiCountQuery(dsUid, errorByTypeQuery(tenant, windowHours)).catch(() => []),
     mapLimit(types, 16, async (ty) => {
       const r = await lokiCountQuery(dsUid, providersForTypeQuery(tenant, ty)).catch(() => []);
       return [ty, scalar(r) ?? 0] as const;
     }),
-    lokiLogLines(dsUid, errorSamplesQuery(tenant), startSec, nowSec, 500).catch(() => []),
     lokiRangeQuery(dsUid, errorTimelineQuery(tenant, "1h"), startSec, nowSec, 3600).catch(() => []),
     lokiLogLines(dsUid, featureFlagsQuery(tenant), flagsStartSec, nowSec, 50).catch(() => []),
     lokiLogLines(dsUid, dataPlaneInfoQuery(tenant), flagsStartSec, nowSec, 5).catch(() => []),
@@ -373,7 +328,6 @@ export async function extractionLogStats(
     providersByType,
     totalProviders: scalar(total),
     errorByType: toMap(error),
-    topErrorsByType: topErrorsByType(samples),
     errorTimeline,
     region: regionFromDatasourceName(ds.name),
     featureFlags: parseFeatureFlagLines(flagLines),
