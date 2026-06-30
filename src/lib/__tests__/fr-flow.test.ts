@@ -26,6 +26,8 @@ function issue(key: string, summary = `summary ${key}`): JiraIssue {
     description: null,
     comments: [],
     parent: null,
+    customers: [],
+    targetedMonth: null,
   };
 }
 

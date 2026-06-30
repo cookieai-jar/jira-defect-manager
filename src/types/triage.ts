@@ -72,6 +72,74 @@ export interface JiraIssue {
    * Empty array when the field is unset.
    */
   customers: string[];
+  /**
+   * "Targeted Month" option value (customfield_11123), e.g. "Jul '26" — the
+   * month an FR is committed for. null when unset. Only FRs carry this.
+   */
+  targetedMonth: string | null;
+}
+
+type JiraStatusCategory = JiraIssue["statusCategory"];
+
+/** A blocking/related issue link surfaced on an FR or its child epics. */
+export interface RoadmapDependency {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: JiraStatusCategory;
+  /** Link direction relative to the source issue. */
+  direction: "blocks" | "blocked-by" | "depends-on" | "relates";
+  url: string;
+  /** True when this is an unresolved blocker (blocked-by/depends-on and not done). */
+  isBlocker: boolean;
+}
+
+/** A child EAC ticket (epic) of a committed FR. */
+export interface RoadmapChild {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: JiraStatusCategory;
+  type: string;
+  url: string;
+  dependencies: RoadmapDependency[];
+}
+
+/** One committed FR within a target month, with its child epics + dependencies. */
+export interface RoadmapFr {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: JiraStatusCategory;
+  targetedMonth: string;
+  url: string;
+  children: RoadmapChild[];
+  dependencies: RoadmapDependency[];
+  /** Count of unresolved blockers across the FR + its children (drives highlight). */
+  blockerCount: number;
+}
+
+/** All FRs committed for one target month (the month's "payload"). */
+export interface CommittedMonth {
+  /** Sortable key, e.g. "2026-07". */
+  key: string;
+  /** Display label, e.g. "Jul '26". */
+  label: string;
+  /** Whether the month is before the current month. */
+  isPast: boolean;
+  frs: RoadmapFr[];
+  /** Payload counts for the month. */
+  frCount: number;
+  childCount: number;
+  blockerCount: number;
+}
+
+/** The committed roadmap grouped by target month (chronological). */
+export interface CommittedRoadmap {
+  months: CommittedMonth[];
+  /** FRs whose Targeted Month is set but couldn't be parsed (surfaced, not silently dropped). */
+  dropped: { key: string; rawValue: string }[];
+  generatedAt: string;
 }
 
 /** True when the issue's parent is an Epic. Used to flag tickets that still need an epic assigned. */

@@ -31,6 +31,8 @@ function issue(over: Partial<JiraIssue> = {}): JiraIssue {
     description: null,
     comments: [],
     parent: null,
+    customers: [],
+    targetedMonth: null,
     ...over,
   };
 }

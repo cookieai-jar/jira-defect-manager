@@ -1,4 +1,5 @@
-import type { JiraIssue, JiraComment, ResolvedTicketRef } from "@/types/triage";
+import type { JiraIssue, JiraComment, ResolvedTicketRef, RoadmapDependency } from "@/types/triage";
+import { classifyDependency, type RoadmapIssueInput } from "@/lib/fr-roadmap";
 
 interface JiraEnv {
   baseUrl: string;
@@ -43,6 +44,8 @@ async function jiraFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 /** JIRA custom field id for the "Customer" multi-select (verified via spike). */
 export const CUSTOMER_FIELD = "customfield_10044";
+/** "Targeted Month" single-select (e.g. "Jul '26") — an FR's committed month. */
+export const TARGETED_MONTH_FIELD = "customfield_11123";
 
 /** A multi-select option as JIRA serializes it: { self, value, id }. */
 interface JiraOption {
@@ -54,6 +57,7 @@ interface RawJiraIssue {
   key: string;
   fields: {
     [CUSTOMER_FIELD]?: JiraOption[] | null;
+    [TARGETED_MONTH_FIELD]?: JiraOption | null;
     summary: string;
     status: { name: string; statusCategory: { key: string } };
     priority?: { name: string } | null;
@@ -137,6 +141,7 @@ function normalizeIssue(raw: RawJiraIssue, baseUrl: string): JiraIssue {
         }
       : null,
     customers: extractCustomers(raw.fields[CUSTOMER_FIELD]),
+    targetedMonth: raw.fields[TARGETED_MONTH_FIELD]?.value?.trim() || null,
   };
 }
 
@@ -168,6 +173,7 @@ const FIELDS = [
   "description",
   "comment",
   CUSTOMER_FIELD,
+  TARGETED_MONTH_FIELD,
 ].join(",");
 
 /**
@@ -254,6 +260,95 @@ export async function searchAllIssues(jql: string, hardCap = 20000): Promise<Jir
   }
   if (out.length >= hardCap) {
     console.warn(`[searchAllIssues] hit hard cap of ${hardCap} issues; results truncated`);
+  }
+  return out;
+}
+
+// --- committed roadmap (FR target-month → child epics + dependency links) -----
+
+function statusCat(key: string | undefined): JiraIssue["statusCategory"] {
+  return key === "new" || key === "indeterminate" || key === "done" ? key : "undefined";
+}
+
+export interface RawLinkedIssue {
+  key: string;
+  fields?: { summary?: string; status?: { name?: string; statusCategory?: { key?: string } } };
+}
+export interface RawIssueLink {
+  type?: { name?: string; inward?: string; outward?: string };
+  inwardIssue?: RawLinkedIssue;
+  outwardIssue?: RawLinkedIssue;
+}
+
+/** PURE. Map JIRA issuelinks to RoadmapDependency[] (outward→type.outward, inward→type.inward). */
+export function parseDependencies(links: RawIssueLink[] | undefined, baseUrl: string): RoadmapDependency[] {
+  const out: RoadmapDependency[] = [];
+  for (const l of links ?? []) {
+    // outwardIssue uses the outward phrase ("blocks"); inwardIssue the inward ("is blocked by").
+    const linked = l.outwardIssue ?? l.inwardIssue;
+    if (!linked) continue;
+    const phrase = l.outwardIssue ? l.type?.outward ?? "" : l.type?.inward ?? "";
+    const cat = statusCat(linked.fields?.status?.statusCategory?.key);
+    const { direction, isBlocker } = classifyDependency(phrase, cat === "done");
+    out.push({
+      key: linked.key,
+      summary: linked.fields?.summary ?? "",
+      status: linked.fields?.status?.name ?? "",
+      statusCategory: cat,
+      direction,
+      url: `${baseUrl}/browse/${linked.key}`,
+      isBlocker,
+    });
+  }
+  return out;
+}
+
+interface RawRoadmapIssue {
+  key: string;
+  fields: {
+    summary: string;
+    status: { name: string; statusCategory: { key: string } };
+    issuetype: { name: string };
+    parent?: { key: string } | null;
+    issuelinks?: RawIssueLink[];
+    [TARGETED_MONTH_FIELD]?: JiraOption | null;
+  };
+}
+
+/**
+ * Fetch lightweight roadmap records (status + parent + parsed dependency links +
+ * targeted month) for the given JQL. Used to pull committed FRs + their child
+ * epics in one pass. Paginates to `maxResults`.
+ */
+export async function searchRoadmapIssues(jql: string, maxResults = 1000): Promise<RoadmapIssueInput[]> {
+  const e = env();
+  const out: RoadmapIssueInput[] = [];
+  let nextPageToken: string | undefined;
+  while (out.length < maxResults) {
+    const body: Record<string, unknown> = {
+      jql,
+      fields: ["summary", "status", "issuetype", "parent", "issuelinks", TARGETED_MONTH_FIELD],
+      maxResults: Math.min(100, maxResults - out.length),
+    };
+    if (nextPageToken) body.nextPageToken = nextPageToken;
+    const res = await jiraFetch<{ issues: RawRoadmapIssue[]; nextPageToken?: string; isLast?: boolean }>(
+      "/rest/api/3/search/jql",
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    for (const raw of res.issues) {
+      out.push({
+        key: raw.key,
+        summary: raw.fields.summary,
+        status: raw.fields.status.name,
+        statusCategory: statusCat(raw.fields.status.statusCategory.key),
+        issueType: raw.fields.issuetype.name,
+        parentKey: raw.fields.parent?.key ?? null,
+        targetedMonth: raw.fields[TARGETED_MONTH_FIELD]?.value?.trim() || null,
+        dependencies: parseDependencies(raw.fields.issuelinks, e.baseUrl),
+      });
+    }
+    if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
+    nextPageToken = res.nextPageToken;
   }
   return out;
 }

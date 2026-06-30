@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractCustomers, CUSTOMER_FIELD } from "@/lib/jira";
+import { extractCustomers, CUSTOMER_FIELD, parseDependencies, type RawIssueLink } from "@/lib/jira";
 
 describe("extractCustomers (customfield_10044 multi-select)", () => {
   it("pulls .value from each option (real JIRA shape)", () => {
@@ -35,5 +35,40 @@ describe("extractCustomers (customfield_10044 multi-select)", () => {
 
   it("exposes the verified custom field id", () => {
     expect(CUSTOMER_FIELD).toBe("customfield_10044");
+  });
+});
+
+describe("parseDependencies (issuelinks → roadmap deps)", () => {
+  const linked = (key: string, statusKey: string) => ({
+    key,
+    fields: { summary: `${key} summary`, status: { name: statusKey === "done" ? "Done" : "In Progress", statusCategory: { key: statusKey } } },
+  });
+
+  it("maps an inward 'is blocked by' link to an unresolved blocker", () => {
+    const links: RawIssueLink[] = [
+      { type: { name: "Blocks", inward: "is blocked by", outward: "blocks" }, inwardIssue: linked("EAC-9", "indeterminate") },
+    ];
+    const [d] = parseDependencies(links, "https://j");
+    expect(d).toMatchObject({ key: "EAC-9", direction: "blocked-by", isBlocker: true, url: "https://j/browse/EAC-9" });
+  });
+
+  it("does NOT flag a blocker that is already done", () => {
+    const links: RawIssueLink[] = [
+      { type: { name: "Blocks", inward: "is blocked by", outward: "blocks" }, inwardIssue: linked("EAC-9", "done") },
+    ];
+    expect(parseDependencies(links, "https://j")[0].isBlocker).toBe(false);
+  });
+
+  it("maps an outward 'blocks' link as a non-blocker for the source", () => {
+    const links: RawIssueLink[] = [
+      { type: { name: "Blocks", inward: "is blocked by", outward: "blocks" }, outwardIssue: linked("EAC-2", "new") },
+    ];
+    const [d] = parseDependencies(links, "https://j");
+    expect(d).toMatchObject({ key: "EAC-2", direction: "blocks", isBlocker: false });
+  });
+
+  it("skips links with neither inward nor outward issue", () => {
+    expect(parseDependencies([{ type: { name: "Blocks" } }], "https://j")).toEqual([]);
+    expect(parseDependencies(undefined, "https://j")).toEqual([]);
   });
 });

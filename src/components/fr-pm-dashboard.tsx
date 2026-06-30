@@ -15,6 +15,7 @@ import { P0Card } from "@/components/p0-card";
 import { TicketDrawer } from "@/components/ticket-drawer";
 import { FrPmTable } from "@/components/fr-pm-table";
 import { FrFlowTrend } from "@/components/fr-flow-trend";
+import { FrRoadmap } from "@/components/fr-roadmap";
 import { FrDemandValueMatrix } from "@/components/fr-demand-value-matrix";
 import { FrDecisionsNeeded } from "@/components/fr-decisions-needed";
 import { FrSprintPlan } from "@/components/fr-sprint-plan";
@@ -136,6 +137,9 @@ export function FrPmDashboard() {
 
           {/* Macro flow: created vs resolved, WIP, backlog verdict */}
           <FrFlowTrend trend={report.trend} rows={rows} />
+
+          {/* Committed roadmap: FRs by targeted month + child epics + dependencies */}
+          <FrRoadmap />
 
           {/* Prioritization: the shared PM/EM build-order artifact */}
           <FrDemandValueMatrix rows={rows} onSelect={setSelected} />
