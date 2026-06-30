@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import type { FleetReport, FleetTenantSummary, Severity } from "@/types/tenant";
 import { Sparkline } from "@/components/sparkline";
+import { buildWatchDigest, type WatchDigest } from "@/lib/watch-digest";
 
 interface FleetResponse {
   report: FleetReport | null;
@@ -145,6 +146,12 @@ export function TenantFleetDashboard() {
     [report, starred],
   );
 
+  // Digest of the watch-list (white-glove ∪ starred) — what needs attention now.
+  const watchDigest = useMemo(
+    () => buildWatchDigest((report?.tenants ?? []).filter((t) => t.whiteGlove || starred.has(t.tenant))),
+    [report, starred],
+  );
+
   const toggleSort = useCallback((key: SortKey) => {
     setSort((prev) => {
       if (prev?.key !== key) return { key, dir: "desc" };
@@ -209,6 +216,9 @@ export function TenantFleetDashboard() {
             />
           </div>
 
+          {/* Watch-list digest — what needs attention across white-glove + starred */}
+          {watchDigest.total > 0 && <WatchDigestCard digest={watchDigest} router={router} />}
+
           {/* White-glove customers — the configured close-watch accounts */}
           {whiteGloveRows.length > 0 && (
             <FleetSection
@@ -265,6 +275,58 @@ export function TenantFleetDashboard() {
         </div>
       )}
     </div>
+  );
+}
+
+function WatchDigestCard({
+  digest,
+  router,
+}: {
+  digest: WatchDigest;
+  router: ReturnType<typeof useRouter>;
+}) {
+  const allSteady = digest.attention.length === 0;
+  return (
+    <Card className={allSteady ? undefined : "border-warning/40"}>
+      <CardBody className="space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-fg">
+            <HeartPulse className="h-4 w-4 text-accent" /> Watch-list digest
+          </h2>
+          <span className="text-[11px] text-fg-subtle">
+            {digest.attention.length} of {digest.total} need attention · {digest.steadyCount} steady
+          </span>
+        </div>
+        {allSteady ? (
+          <p className="text-sm text-success">✓ All {digest.total} watched tenants steady.</p>
+        ) : (
+          <ul className="space-y-1">
+            {digest.attention.map((item) => {
+              const tone = healthTone(item.healthScore);
+              return (
+                <li
+                  key={item.tenant}
+                  onClick={() => router.push(`/tenants/${encodeURIComponent(item.tenant)}`)}
+                  className="flex flex-wrap items-center gap-2 rounded px-2 py-1.5 hover:bg-bg-muted/40 transition-colors cursor-pointer"
+                >
+                  {item.whiteGlove && (
+                    <span title="White-glove customer" className="inline-flex shrink-0">
+                      <Crown className="h-3 w-3 text-warning" />
+                    </span>
+                  )}
+                  <span className="font-medium text-fg">{item.displayName}</span>
+                  <span className={cn("font-mono text-xs tabular-nums", HEALTH_TEXT[tone])}>
+                    {item.healthScore}/100
+                  </span>
+                  <DeltaBadge delta={item.healthDelta} />
+                  <span className="text-xs text-fg-muted">{item.reasons.join(" · ")}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 
