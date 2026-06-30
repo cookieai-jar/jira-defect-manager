@@ -1,11 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarClock, ChevronRight, ExternalLink, RefreshCw, ShieldAlert } from "lucide-react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusChip } from "@/components/jira-chips";
+import { monthKeyOf } from "@/lib/fr-roadmap";
 import { cn } from "@/lib/utils";
 import type { CommittedRoadmap, CommittedMonth, RoadmapFr, RoadmapDependency } from "@/types/triage";
+
+/** Month key offset from now (handles year wrap), e.g. -1 = previous month. */
+function shiftedMonthKey(now: number, delta: number): string {
+  const d = new Date(now);
+  return monthKeyOf(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + delta, 1));
+}
 
 export function FrRoadmap() {
   const [roadmap, setRoadmap] = useState<CommittedRoadmap | null>(null);
@@ -13,6 +20,16 @@ export function FrRoadmap() {
   const [loading, setLoading] = useState(true);
   const [openFrs, setOpenFrs] = useState<Set<string>>(new Set());
   const [openMonths, setOpenMonths] = useState<Set<string> | null>(null);
+  const [showOther, setShowOther] = useState(false);
+
+  // The near window — previous / current / next month — shown as primary rows.
+  const { currentKey, nearKeys } = useMemo(() => {
+    const now = Date.now();
+    return {
+      currentKey: shiftedMonthKey(now, 0),
+      nearKeys: new Set([shiftedMonthKey(now, -1), shiftedMonthKey(now, 0), shiftedMonthKey(now, 1)]),
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -24,16 +41,14 @@ export function FrRoadmap() {
       };
       setRoadmap(data.roadmap);
       setError(data.error ?? null);
-      // Default: expand current + future months, collapse past ones.
-      if (data.roadmap) {
-        setOpenMonths(new Set(data.roadmap.months.filter((m) => !m.isPast).map((m) => m.key)));
-      }
+      // Default: expand the current month only (prev/next visible but collapsed).
+      setOpenMonths(new Set([currentKey]));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load roadmap");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentKey]);
 
   useEffect(() => {
     refresh();
@@ -94,16 +109,44 @@ export function FrRoadmap() {
           <p className="text-sm text-fg-muted">No FRs have a Targeted Month set.</p>
         ) : (
           <>
-            {roadmap.months.map((m) => (
-              <MonthGroup
-                key={m.key}
-                month={m}
-                open={openMonths?.has(m.key) ?? false}
-                onToggle={() => toggleMonth(m.key)}
-                openFrs={openFrs}
-                onToggleFr={toggleFr}
-              />
-            ))}
+            {(() => {
+              const near = roadmap.months.filter((m) => nearKeys.has(m.key));
+              const other = roadmap.months.filter((m) => !nearKeys.has(m.key));
+              const renderMonth = (m: CommittedMonth) => (
+                <MonthGroup
+                  key={m.key}
+                  month={m}
+                  open={openMonths?.has(m.key) ?? false}
+                  onToggle={() => toggleMonth(m.key)}
+                  openFrs={openFrs}
+                  onToggleFr={toggleFr}
+                />
+              );
+              return (
+                <>
+                  {near.map(renderMonth)}
+                  {other.length > 0 && (
+                    <div className="rounded border border-border">
+                      <button
+                        type="button"
+                        onClick={() => setShowOther((v) => !v)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-fg-muted hover:bg-bg-muted/40 transition-colors"
+                      >
+                        <ChevronRight className={cn("h-4 w-4 transition-transform", showOther && "rotate-90")} />
+                        <span className="font-medium">Other months</span>
+                        <span className="ml-auto text-[11px] text-fg-subtle">
+                          {other.length} month{other.length === 1 ? "" : "s"} ·{" "}
+                          {other.reduce((n, m) => n + m.frCount, 0)} FRs
+                        </span>
+                      </button>
+                      {showOther && (
+                        <div className="space-y-2 border-t border-border/60 p-2">{other.map(renderMonth)}</div>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             {roadmap.dropped.length > 0 && (
               <div className="rounded border border-warning/40 bg-warning/5 px-3 py-2 text-[11px] text-fg-muted">
                 <span className="font-medium text-warning">
