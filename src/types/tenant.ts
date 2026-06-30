@@ -228,6 +228,42 @@ export interface ErrorRcaResult {
   error?: string;
 }
 
+/** One datasource's authoritative status, from the Metrics DB `datasources` table. */
+export interface DatasourceRow {
+  name: string;
+  datasourceType: string;
+  agentType: string;
+  syncStatus: string;
+  parseStatus: string;
+  /** Sync error reason code, when failing. */
+  syncError: string | null;
+  /** Seconds since the last successful sync; null if never. */
+  lastSyncAgeSec: number | null;
+  outdated: boolean;
+}
+
+/** Authoritative per-datasource health for a tenant, from the Metrics DB. */
+export interface DatasourceHealth {
+  /** The Metrics DB tenant_id this resolved to (differs from the Grafana slug). */
+  dbTenantId: string;
+  /** Visible (non-hidden) datasource count — the true total. */
+  total: number;
+  /** Datasources whose sync_status is not healthy (not SUCCESS/PENDING/IN_PROGRESS). */
+  failing: number;
+  parseErrors: number;
+  outdated: number;
+  /** Count by sync_status, most common first (the failure-type breakdown). */
+  byStatus: { status: string; count: number }[];
+  /** Top sync_error_reason codes among failing datasources. */
+  topSyncErrors: { reason: string; count: number }[];
+  /** Failing/outdated datasources (capped), worst first. */
+  problems: DatasourceRow[];
+  /** True when more problem rows exist than the cap shows. */
+  problemsTruncated: boolean;
+  /** Timestamp (YYYY-MM-DD HH:MM:SS…) of the snapshot the data came from. */
+  snapshotAt: string | null;
+}
+
 /** A graph node/edge type with its count. */
 export interface GraphTypeCount {
   type: string;
@@ -380,6 +416,8 @@ export interface TenantHealthReport {
   healthScore: number;
   /** Health-score history (oldest→newest) from persisted snapshots, for the trend chart. */
   healthHistory: { t: string; score: number }[];
+  /** Authoritative per-datasource health from the Metrics DB, or null when unavailable. */
+  datasourceHealth: DatasourceHealth | null;
   /** Ranked top issues (for the header + overview). */
   topIssues: string[];
   /** Headline totals for the summary stats row. */

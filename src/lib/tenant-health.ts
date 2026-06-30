@@ -26,6 +26,7 @@ import {
   TENANT_NAME_OVERRIDES,
 } from "@/lib/tenant-mapping";
 import { extractionLogStats } from "@/lib/tenant-logs";
+import { fetchTenantDatasourceHealth } from "@/lib/metrics-db";
 import { connectorDetailUrl, tenantHealthDashboardUrl, lokiErrorLogsUrl } from "@/lib/tenant-grafana-links";
 
 /**
@@ -738,6 +739,16 @@ export async function buildTenantReport(
     console.warn(`[tenant-health] health history load failed for ${tenant}:`, e instanceof Error ? e.message : e);
   }
 
+  // Authoritative per-datasource health from the Metrics DB (best-effort).
+  let datasourceHealth: TenantHealthReport["datasourceHealth"] = null;
+  try {
+    // Pass the Grafana integration inventory so a normalization collision that
+    // resolves to a different customer's id is rejected (no integration overlap).
+    datasourceHealth = await fetchTenantDatasourceHealth(tenant, inventory);
+  } catch (e) {
+    console.warn(`[tenant-health] datasource-health load failed for ${tenant}:`, e instanceof Error ? e.message : e);
+  }
+
   return {
     tenant,
     displayName,
@@ -767,11 +778,14 @@ export async function buildTenantReport(
     jiraTickets,
     healthScore: computeHealthScore(integrations, alerts),
     healthHistory,
+    datasourceHealth,
     topIssues: buildTopIssues(integrations, alerts),
     totals: {
       integrations: integrations.length,
       providers: totalProviders,
-      datasources,
+      // Prefer the Metrics DB's authoritative visible-datasource count (the
+      // exact per-row truth) over the metric gauge; fall back to the metric.
+      datasources: datasourceHealth?.total ?? datasources,
       extractionErrors: Math.round(totalErrors),
       activeAlerts: alerts.filter((a) => a.state === "firing").length,
       pendingExtractJobs,

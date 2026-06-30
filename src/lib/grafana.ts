@@ -87,6 +87,52 @@ export async function queryRange(
   return parsePromMatrix(json);
 }
 
+/**
+ * Run raw SQL against a Grafana-managed Postgres datasource via /api/ds/query.
+ * Returns rows as plain objects keyed by column name. NOTE: Grafana sends rawSql
+ * verbatim (no bound parameters over this endpoint) — the CALLER must
+ * validate/escape any interpolated identifiers/values.
+ */
+export async function queryPostgres(uid: string, rawSql: string): Promise<Array<Record<string, unknown>>> {
+  const e = env();
+  const res = await fetch(`${e.url}/api/ds/query`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${e.token}`,
+    },
+    body: JSON.stringify({
+      queries: [{ refId: "A", datasource: { uid, type: "grafana-postgresql-datasource" }, rawSql, format: "table" }],
+      from: "now-1h",
+      to: "now",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Grafana ds/query ${res.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await res.json()) as {
+    results?: { A?: { error?: string; frames?: Array<{ schema: { fields: { name: string }[] }; data: { values: unknown[][] } }> } };
+  };
+  const a = json.results?.A;
+  if (a?.error) throw new Error(`ds/query error: ${a.error}`);
+  const frame = a?.frames?.[0];
+  if (!frame) return [];
+  const cols = frame.schema.fields.map((f) => f.name);
+  const values = frame.data.values;
+  const n = values[0]?.length ?? 0;
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < n; i++) {
+    const row: Record<string, unknown> = {};
+    cols.forEach((c, ci) => {
+      row[c] = values[ci]?.[i];
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
 /** Coerce a Prometheus string-encoded sample value to number; NaN if unparseable. */
 function toNumber(raw: unknown): number {
   if (typeof raw === "number") return raw;

@@ -620,6 +620,9 @@ export function TenantHealthDashboard({ tenant }: { tenant: string }) {
             />
           )}
 
+          {/* 5a-iii. Authoritative datasource health (Metrics DB) */}
+          {report.datasourceHealth && <DatasourceHealthCard health={report.datasourceHealth} />}
+
           {/* 5b. Extraction errors over time */}
           <Card>
             <CardHeader>
@@ -1335,6 +1338,104 @@ function RcaResultsCard({
         {results.map((r) => (
           <RcaResultItem key={r.integration} r={r} stale={isStale(r)} />
         ))}
+      </CardBody>
+    </Card>
+  );
+}
+
+/** Tone for a datasource sync_status: success green, in-flight muted, else danger. */
+function syncStatusClass(status: string): string {
+  if (status === "SUCCESS") return "text-success";
+  if (status === "EXTRACTION_PENDING" || status === "EXTRACTION_IN_PROGRESS") return "text-fg-muted";
+  return "text-danger";
+}
+
+function DatasourceHealthCard({ health }: { health: NonNullable<TenantHealthReport["datasourceHealth"]> }) {
+  const healthyPct = health.total > 0 ? Math.round(((health.total - health.failing) / health.total) * 100) : 0;
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-accent" /> Datasources
+          </CardTitle>
+          <span className="text-[11px] text-fg-subtle">
+            authoritative — Metrics DB ({health.dbTenantId})
+            {health.snapshotAt ? ` · snapshot ${health.snapshotAt.slice(0, 19)}` : ""}
+          </span>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-bold tabular-nums text-fg">{health.total.toLocaleString()}</div>
+          <div className="text-[10px] text-fg-subtle">{healthyPct}% healthy</div>
+        </div>
+      </CardHeader>
+      <CardBody className="space-y-3">
+        {/* status breakdown */}
+        <div className="flex flex-wrap gap-2">
+          {health.byStatus.map((s) => (
+            <span
+              key={s.status}
+              className="inline-flex items-center gap-1 rounded border border-border bg-bg-muted/30 px-2 py-1 text-[11px]"
+            >
+              <span className={cn("font-mono font-semibold", syncStatusClass(s.status))}>{s.count.toLocaleString()}</span>
+              <span className="text-fg-muted">{s.status}</span>
+            </span>
+          ))}
+          {health.outdated > 0 && (
+            <span className="inline-flex items-center gap-1 rounded border border-warning/30 bg-warning/5 px-2 py-1 text-[11px]">
+              <span className="font-mono font-semibold text-warning">{health.outdated.toLocaleString()}</span>
+              <span className="text-fg-muted">outdated</span>
+            </span>
+          )}
+        </div>
+
+        {health.problems.length === 0 ? (
+          <p className="text-sm text-fg-muted">No failing or outdated datasources. 🎉</p>
+        ) : (
+          <div className="max-h-[24rem] overflow-auto scroll-thin rounded border border-border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-bg-card z-10">
+                <tr className="border-b border-border text-[11px] uppercase tracking-wide text-fg-subtle">
+                  <th className="text-left font-medium px-3 py-2">Datasource</th>
+                  <th className="text-left font-medium px-3 py-2">Integration</th>
+                  <th className="text-left font-medium px-3 py-2">Sync</th>
+                  <th className="text-left font-medium px-3 py-2">Parse</th>
+                  <th className="text-left font-medium px-3 py-2">Error</th>
+                  <th className="text-right font-medium px-3 py-2">Last sync</th>
+                </tr>
+              </thead>
+              <tbody>
+                {health.problems.map((d, i) => (
+                  <tr key={i} className="border-b border-border/60 last:border-0 hover:bg-bg-muted/30">
+                    <td className="px-3 py-1.5 text-fg max-w-[20rem] truncate" title={d.name}>
+                      {d.name}
+                      {d.outdated && <span className="ml-1.5 text-[10px] text-warning">outdated</span>}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-fg-muted">{d.agentType || "—"}</td>
+                    <td className={cn("px-3 py-1.5 font-mono text-[11px]", syncStatusClass(d.syncStatus))}>{d.syncStatus}</td>
+                    <td
+                      className={cn(
+                        "px-3 py-1.5 font-mono text-[11px]",
+                        d.parseStatus === "ERROR" ? "text-danger" : "text-fg-muted",
+                      )}
+                    >
+                      {d.parseStatus}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-[11px] text-fg-muted max-w-[12rem] truncate" title={d.syncError ?? ""}>
+                      {d.syncError ?? "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-fg-muted">{formatAge(d.lastSyncAgeSec)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] text-fg-subtle">
+          {health.failing.toLocaleString()} failing · {health.parseErrors.toLocaleString()} parse errors ·{" "}
+          {health.outdated.toLocaleString()} outdated
+          {health.problemsTruncated ? ` · showing first ${health.problems.length}` : ""}
+        </p>
       </CardBody>
     </Card>
   );
