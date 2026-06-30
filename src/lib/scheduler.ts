@@ -72,11 +72,12 @@ export async function startAutoSync(
   const g = globalThis as unknown as { __autoSyncStop?: () => void };
   if (g.__autoSyncStop) return g.__autoSyncStop; // already running (HMR / double register)
 
-  const [{ getConfig }, { getSyncState }, { triggerSync }, { latestSyncRun }] = await Promise.all([
+  const [{ getConfig }, { getSyncState }, { triggerSync }, { latestSyncRun }, { buildFleet }] = await Promise.all([
     import("@/lib/config"),
     import("@/lib/sync-state"),
     import("@/lib/sync-runner"),
     import("@/lib/db"),
+    import("@/lib/tenant-health"),
   ]);
 
   // SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC (no zone marker).
@@ -104,6 +105,11 @@ export async function startAutoSync(
     } catch (err) {
       console.warn("[auto-sync] tick failed:", err instanceof Error ? err.message : err);
     }
+    // Compute the fleet so health snapshots accrue (~hourly, throttled inside
+    // buildFleet) regardless of whether anyone has the fleet page open.
+    void buildFleet().catch((err) =>
+      console.warn("[auto-sync] fleet snapshot failed:", err instanceof Error ? err.message : err),
+    );
   };
 
   // Initial pass 15s after boot (let the server settle), then on the interval.

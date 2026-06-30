@@ -76,6 +76,25 @@ function inventoryClause(inventory: string[]): string | null {
   return safe.length ? `agent_type IN (${safe.map((a) => `'${a}'`).join(",")})` : null;
 }
 
+// Short in-memory cache — the DB is snapshot-based (changes infrequently) and the
+// report route is force-dynamic, so repeated loads of a tenant shouldn't re-run
+// the queries. Keyed by slug; the resolved data doesn't depend on `inventory`
+// beyond the collision guard, so slug is a sufficient key within the TTL.
+const _cache = new Map<string, { at: number; value: DatasourceHealth | null }>();
+const CACHE_TTL_MS = 60_000;
+
+export async function fetchTenantDatasourceHealth(
+  slug: string,
+  inventory: string[] = [],
+  now: number = Date.now(),
+): Promise<DatasourceHealth | null> {
+  const hit = _cache.get(slug);
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.value;
+  const value = await fetchTenantDatasourceHealthUncached(slug, inventory, now);
+  _cache.set(slug, { at: now, value });
+  return value;
+}
+
 /**
  * Fetch authoritative datasource health for a tenant from the Metrics DB.
  * Returns null when no candidate id resolves (graceful — callers fall back to
@@ -88,10 +107,10 @@ function inventoryClause(inventory: string[]): string | null {
  * tenant (when that inventory is known). Tenant id + snapshot literal are
  * validated before interpolation.
  */
-export async function fetchTenantDatasourceHealth(
+async function fetchTenantDatasourceHealthUncached(
   slug: string,
-  inventory: string[] = [],
-  now: number = Date.now(),
+  inventory: string[],
+  now: number,
 ): Promise<DatasourceHealth | null> {
   const uid = metricsDbUid();
   const nowSec = Math.floor(now / 1000);
