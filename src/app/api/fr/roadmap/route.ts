@@ -15,9 +15,12 @@ function chunk<T>(arr: T[], n: number): T[][] {
 export async function GET() {
   const baseUrl = process.env.JIRA_BASE_URL?.replace(/\/$/, "") ?? "";
   try {
-    // 1. FRs with a Targeted Month set (parseable ones group into months;
-    //    unparseable ones are surfaced by buildCommittedRoadmap as `dropped`).
-    const withMonth = await searchRoadmapIssues("project = FR AND cf[11123] IS NOT EMPTY ORDER BY key", 2000);
+    // 1. Integrations-component FRs with a Targeted Month set (parseable ones group
+    //    into months; unparseable ones are surfaced by buildCommittedRoadmap as `dropped`).
+    const withMonth = await searchRoadmapIssues(
+      'project = FR AND component = "Integrations" AND cf[11123] IS NOT EMPTY ORDER BY key',
+      2000,
+    );
     const committedKeys = withMonth.filter((f) => parseTargetedMonth(f.targetedMonth)).map((f) => f.key);
 
     // 2. Their child EAC epics (+ dependency links). Batches are independent → run in parallel.

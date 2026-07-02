@@ -82,7 +82,7 @@ export function FrRoadmap() {
             <CalendarClock className="h-4 w-4 text-accent" /> Committed roadmap
           </CardTitle>
           <span className="text-[11px] text-fg-subtle">
-            FRs by targeted month
+            Integrations FRs by targeted month
             {roadmap && roadmap.months.length > 0 && (
               <>
                 {" "}· {totals.frs} committed across {roadmap.months.length} months
@@ -106,7 +106,7 @@ export function FrRoadmap() {
         ) : error && !roadmap ? (
           <p className="text-sm text-danger">Couldn&apos;t load roadmap: {error}</p>
         ) : !roadmap || (roadmap.months.length === 0 && roadmap.dropped.length === 0) ? (
-          <p className="text-sm text-fg-muted">No FRs have a Targeted Month set.</p>
+          <p className="text-sm text-fg-muted">No Integrations FRs have a Targeted Month set.</p>
         ) : (
           <>
             {(() => {
