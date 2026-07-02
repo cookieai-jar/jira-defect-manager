@@ -21,7 +21,6 @@ export function FrRoadmap() {
   const [openFrs, setOpenFrs] = useState<Set<string>>(new Set());
   const [openMonths, setOpenMonths] = useState<Set<string> | null>(null);
   const [showOther, setShowOther] = useState(false);
-  const [allExpanded, setAllExpanded] = useState(false);
 
   // The near window — previous / current / next month — shown as primary rows.
   const { currentKey, nearKeys } = useMemo(() => {
@@ -67,6 +66,13 @@ export function FrRoadmap() {
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  /** Bulk open/close a set of FR rows (used by a month's "expand all"). */
+  const setFrsOpen = (keys: string[], open: boolean) =>
+    setOpenFrs((s) => {
+      const next = new Set(s);
+      for (const k of keys) (open ? next.add(k) : next.delete(k));
+      return next;
+    });
 
   const totals = roadmap
     ? roadmap.months.reduce(
@@ -78,21 +84,6 @@ export function FrRoadmap() {
         { frs: 0, blockers: 0, incomplete: 0 },
       )
     : { frs: 0, blockers: 0, incomplete: 0 };
-
-  const toggleAll = () => {
-    if (!roadmap) return;
-    if (allExpanded) {
-      setOpenMonths(new Set([currentKey]));
-      setOpenFrs(new Set());
-      setShowOther(false);
-      setAllExpanded(false);
-    } else {
-      setOpenMonths(new Set(roadmap.months.map((m) => m.key)));
-      setOpenFrs(new Set(roadmap.months.flatMap((m) => m.frs.map((f) => f.key))));
-      setShowOther(true);
-      setAllExpanded(true);
-    }
-  };
 
   return (
     <Card>
@@ -114,25 +105,14 @@ export function FrRoadmap() {
             )}
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          {roadmap && roadmap.months.length > 0 && (
-            <button
-              type="button"
-              onClick={toggleAll}
-              className="inline-flex items-center gap-1.5 rounded border border-border bg-bg-card px-2 py-1 text-[11px] font-medium text-fg hover:bg-bg-muted/60 transition-colors"
-            >
-              {allExpanded ? "Collapse all" : "Expand all"}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 text-[11px] text-fg-subtle hover:text-accent transition-colors disabled:opacity-60"
-          >
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Refresh
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 text-[11px] text-fg-subtle hover:text-accent transition-colors disabled:opacity-60"
+        >
+          <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Refresh
+        </button>
       </CardHeader>
       <CardBody className="space-y-3">
         {loading && !roadmap ? (
@@ -154,6 +134,7 @@ export function FrRoadmap() {
                   onToggle={() => toggleMonth(m.key)}
                   openFrs={openFrs}
                   onToggleFr={toggleFr}
+                  onSetFrsOpen={setFrsOpen}
                 />
               );
               return (
@@ -202,13 +183,17 @@ function MonthGroup({
   onToggle,
   openFrs,
   onToggleFr,
+  onSetFrsOpen,
 }: {
   month: CommittedMonth;
   open: boolean;
   onToggle: () => void;
   openFrs: Set<string>;
   onToggleFr: (key: string) => void;
+  onSetFrsOpen: (keys: string[], open: boolean) => void;
 }) {
+  const frKeys = month.frs.map((f) => f.key);
+  const allFrsOpen = frKeys.length > 0 && frKeys.every((k) => openFrs.has(k));
   return (
     <div className={cn("rounded border border-border", month.isPast && "opacity-70")}>
       <button
@@ -241,10 +226,21 @@ function MonthGroup({
         </span>
       </button>
       {open && (
-        <div className="divide-y divide-border/60 border-t border-border/60">
-          {month.frs.map((fr) => (
-            <FrRow key={fr.key} fr={fr} open={openFrs.has(fr.key)} onToggle={() => onToggleFr(fr.key)} />
-          ))}
+        <div className="border-t border-border/60">
+          <div className="flex justify-end px-3 py-1">
+            <button
+              type="button"
+              onClick={() => onSetFrsOpen(frKeys, !allFrsOpen)}
+              className="text-[11px] text-fg-subtle hover:text-accent transition-colors"
+            >
+              {allFrsOpen ? "Collapse all FRs" : "Expand all FRs"}
+            </button>
+          </div>
+          <div className="divide-y divide-border/60 border-t border-border/60">
+            {month.frs.map((fr) => (
+              <FrRow key={fr.key} fr={fr} open={openFrs.has(fr.key)} onToggle={() => onToggleFr(fr.key)} />
+            ))}
+          </div>
         </div>
       )}
     </div>
