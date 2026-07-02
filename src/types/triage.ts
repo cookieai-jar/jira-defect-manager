@@ -103,6 +103,8 @@ export interface RoadmapChild {
   type: string;
   url: string;
   dependencies: RoadmapDependency[];
+  /** Planning fields that are unset (subset of "Due Date"/"Original Estimate"/"Sprint"). */
+  missingFields: string[];
 }
 
 /** One committed FR within a target month, with its child epics + dependencies. */
@@ -117,6 +119,8 @@ export interface RoadmapFr {
   dependencies: RoadmapDependency[];
   /** Count of unresolved blockers across the FR + its children (drives highlight). */
   blockerCount: number;
+  /** Child epics with ≥1 missing planning field. */
+  incompleteChildCount: number;
 }
 
 /** All FRs committed for one target month (the month's "payload"). */
@@ -132,6 +136,8 @@ export interface CommittedMonth {
   frCount: number;
   childCount: number;
   blockerCount: number;
+  /** Child epics (across the month's FRs) with ≥1 missing planning field. */
+  incompleteChildCount: number;
 }
 
 /** The committed roadmap grouped by target month (chronological). */

@@ -65,6 +65,25 @@ export function classifyDependency(
   return { direction: "relates", isBlocker: false };
 }
 
+/** Planning fields we expect every committed EAC epic to have set. */
+export const EAC_REQUIRED_FIELDS = ["Due Date", "Original Estimate", "Sprint"] as const;
+
+/**
+ * PURE. Which of the required EAC planning fields are unset. `originalEstimate`
+ * is seconds (0/null = unset); `sprint` is JIRA's array (empty/null = unset).
+ */
+export function missingEacFields(v: {
+  dueDate: unknown;
+  originalEstimate: unknown;
+  sprint: unknown;
+}): string[] {
+  const missing: string[] = [];
+  if (!v.dueDate) missing.push("Due Date");
+  if (!v.originalEstimate) missing.push("Original Estimate");
+  if (!Array.isArray(v.sprint) || v.sprint.length === 0) missing.push("Sprint");
+  return missing;
+}
+
 /** A lightweight issue (FR or child epic) with parsed dependency links. */
 export interface RoadmapIssueInput {
   key: string;
@@ -75,6 +94,8 @@ export interface RoadmapIssueInput {
   parentKey: string | null;
   targetedMonth: string | null;
   dependencies: RoadmapDependency[];
+  /** Unset planning fields (children only); [] for FRs. */
+  missingFields: string[];
 }
 
 /**
@@ -100,6 +121,7 @@ export function buildCommittedRoadmap(
       type: c.issueType,
       url: browse(c.key),
       dependencies: c.dependencies,
+      missingFields: c.missingFields,
     };
     const list = childrenByParent.get(c.parentKey) ?? [];
     list.push(child);
@@ -132,6 +154,7 @@ export function buildCommittedRoadmap(
       children: kids,
       dependencies: fr.dependencies,
       blockerCount,
+      incompleteChildCount: kids.filter((k) => k.missingFields.length > 0).length,
     };
     const bucket = byMonth.get(parsed.key) ?? { label: monthLabel(parsed), frs: [] };
     bucket.frs.push(row);
@@ -151,6 +174,7 @@ export function buildCommittedRoadmap(
         frCount: frsSorted.length,
         childCount: frsSorted.reduce((n, f) => n + f.children.length, 0),
         blockerCount: frsSorted.reduce((n, f) => n + f.blockerCount, 0),
+        incompleteChildCount: frsSorted.reduce((n, f) => n + f.incompleteChildCount, 0),
       };
     });
 

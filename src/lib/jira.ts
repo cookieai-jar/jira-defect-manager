@@ -1,5 +1,10 @@
 import type { JiraIssue, JiraComment, ResolvedTicketRef, RoadmapDependency } from "@/types/triage";
-import { classifyDependency, type RoadmapIssueInput } from "@/lib/fr-roadmap";
+import { classifyDependency, missingEacFields, type RoadmapIssueInput } from "@/lib/fr-roadmap";
+
+/** JIRA field ids for the EAC planning fields the roadmap flags when unset. */
+const DUE_DATE_FIELD = "duedate";
+const ORIGINAL_ESTIMATE_FIELD = "timeoriginalestimate";
+const SPRINT_FIELD = "customfield_10020";
 
 interface JiraEnv {
   baseUrl: string;
@@ -312,6 +317,9 @@ interface RawRoadmapIssue {
     parent?: { key: string } | null;
     issuelinks?: RawIssueLink[];
     [TARGETED_MONTH_FIELD]?: JiraOption | null;
+    [DUE_DATE_FIELD]?: string | null;
+    [ORIGINAL_ESTIMATE_FIELD]?: number | null;
+    [SPRINT_FIELD]?: unknown[] | null;
   };
 }
 
@@ -327,7 +335,17 @@ export async function searchRoadmapIssues(jql: string, maxResults = 1000): Promi
   while (out.length < maxResults) {
     const body: Record<string, unknown> = {
       jql,
-      fields: ["summary", "status", "issuetype", "parent", "issuelinks", TARGETED_MONTH_FIELD],
+      fields: [
+        "summary",
+        "status",
+        "issuetype",
+        "parent",
+        "issuelinks",
+        TARGETED_MONTH_FIELD,
+        DUE_DATE_FIELD,
+        ORIGINAL_ESTIMATE_FIELD,
+        SPRINT_FIELD,
+      ],
       maxResults: Math.min(100, maxResults - out.length),
     };
     if (nextPageToken) body.nextPageToken = nextPageToken;
@@ -345,6 +363,11 @@ export async function searchRoadmapIssues(jql: string, maxResults = 1000): Promi
         parentKey: raw.fields.parent?.key ?? null,
         targetedMonth: raw.fields[TARGETED_MONTH_FIELD]?.value?.trim() || null,
         dependencies: parseDependencies(raw.fields.issuelinks, e.baseUrl),
+        missingFields: missingEacFields({
+          dueDate: raw.fields[DUE_DATE_FIELD],
+          originalEstimate: raw.fields[ORIGINAL_ESTIMATE_FIELD],
+          sprint: raw.fields[SPRINT_FIELD],
+        }),
       });
     }
     if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;

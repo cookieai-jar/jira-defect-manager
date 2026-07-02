@@ -4,6 +4,7 @@ import {
   classifyDependency,
   monthKeyOf,
   buildCommittedRoadmap,
+  missingEacFields,
   type RoadmapIssueInput,
 } from "@/lib/fr-roadmap";
 import type { RoadmapDependency } from "@/types/triage";
@@ -46,6 +47,25 @@ describe("monthKeyOf", () => {
   });
 });
 
+describe("missingEacFields", () => {
+  it("flags each unset planning field", () => {
+    expect(missingEacFields({ dueDate: null, originalEstimate: null, sprint: null })).toEqual([
+      "Due Date",
+      "Original Estimate",
+      "Sprint",
+    ]);
+  });
+  it("treats an empty sprint array and 0 estimate as missing", () => {
+    expect(missingEacFields({ dueDate: "2026-07-01", originalEstimate: 0, sprint: [] })).toEqual([
+      "Original Estimate",
+      "Sprint",
+    ]);
+  });
+  it("returns [] when all are set", () => {
+    expect(missingEacFields({ dueDate: "2026-07-01", originalEstimate: 28800, sprint: [{ id: 5 }] })).toEqual([]);
+  });
+});
+
 function dep(over: Partial<RoadmapDependency> = {}): RoadmapDependency {
   return {
     key: "X-1",
@@ -68,6 +88,7 @@ function fr(over: Partial<RoadmapIssueInput> = {}): RoadmapIssueInput {
     parentKey: null,
     targetedMonth: "Jul '26",
     dependencies: [],
+    missingFields: [],
     ...over,
   };
 }
@@ -83,7 +104,7 @@ describe("buildCommittedRoadmap", () => {
       fr({ key: "FR-4", targetedMonth: "garbage" }), // dropped
     ];
     const children = [
-      { ...fr({ key: "EAC-1", issueType: "Epic", parentKey: "FR-1", targetedMonth: null }), dependencies: [dep({ key: "EAC-9" })] },
+      { ...fr({ key: "EAC-1", issueType: "Epic", parentKey: "FR-1", targetedMonth: null }), dependencies: [dep({ key: "EAC-9" })], missingFields: ["Sprint"] },
       fr({ key: "EAC-2", issueType: "Epic", parentKey: "FR-3", targetedMonth: null }),
       fr({ key: "EAC-X", issueType: "Epic", parentKey: "FR-404", targetedMonth: null }), // orphan, ignored
     ];
@@ -108,6 +129,11 @@ describe("buildCommittedRoadmap", () => {
 
     // FR-4 has a set-but-unparseable month → surfaced in `dropped`, not silently lost
     expect(rm.dropped).toEqual([{ key: "FR-4", rawValue: "garbage" }]);
+
+    // EAC-1 (child of FR-1) is missing Sprint → surfaced on the child + tallied up
+    expect(jul.frs[0].children[0].missingFields).toEqual(["Sprint"]);
+    expect(jul.frs[0].incompleteChildCount).toBe(1);
+    expect(jul.incompleteChildCount).toBe(1);
   });
 
   it("dedupes a blocker shared between an FR and its child (counts it once)", () => {

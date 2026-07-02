@@ -21,6 +21,7 @@ export function FrRoadmap() {
   const [openFrs, setOpenFrs] = useState<Set<string>>(new Set());
   const [openMonths, setOpenMonths] = useState<Set<string> | null>(null);
   const [showOther, setShowOther] = useState(false);
+  const [allExpanded, setAllExpanded] = useState(false);
 
   // The near window — previous / current / next month — shown as primary rows.
   const { currentKey, nearKeys } = useMemo(() => {
@@ -69,10 +70,29 @@ export function FrRoadmap() {
 
   const totals = roadmap
     ? roadmap.months.reduce(
-        (acc, m) => ({ frs: acc.frs + m.frCount, blockers: acc.blockers + m.blockerCount }),
-        { frs: 0, blockers: 0 },
+        (acc, m) => ({
+          frs: acc.frs + m.frCount,
+          blockers: acc.blockers + m.blockerCount,
+          incomplete: acc.incomplete + m.incompleteChildCount,
+        }),
+        { frs: 0, blockers: 0, incomplete: 0 },
       )
-    : { frs: 0, blockers: 0 };
+    : { frs: 0, blockers: 0, incomplete: 0 };
+
+  const toggleAll = () => {
+    if (!roadmap) return;
+    if (allExpanded) {
+      setOpenMonths(new Set([currentKey]));
+      setOpenFrs(new Set());
+      setShowOther(false);
+      setAllExpanded(false);
+    } else {
+      setOpenMonths(new Set(roadmap.months.map((m) => m.key)));
+      setOpenFrs(new Set(roadmap.months.flatMap((m) => m.frs.map((f) => f.key))));
+      setShowOther(true);
+      setAllExpanded(true);
+    }
+  };
 
   return (
     <Card>
@@ -87,18 +107,32 @@ export function FrRoadmap() {
               <>
                 {" "}· {totals.frs} committed across {roadmap.months.length} months
                 {totals.blockers > 0 && <span className="text-danger"> · {totals.blockers} blockers</span>}
+                {totals.incomplete > 0 && (
+                  <span className="text-warning"> · {totals.incomplete} epics missing fields</span>
+                )}
               </>
             )}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 text-[11px] text-fg-subtle hover:text-accent transition-colors disabled:opacity-60"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          {roadmap && roadmap.months.length > 0 && (
+            <button
+              type="button"
+              onClick={toggleAll}
+              className="inline-flex items-center gap-1.5 rounded border border-border bg-bg-card px-2 py-1 text-[11px] font-medium text-fg hover:bg-bg-muted/60 transition-colors"
+            >
+              {allExpanded ? "Collapse all" : "Expand all"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 text-[11px] text-fg-subtle hover:text-accent transition-colors disabled:opacity-60"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Refresh
+          </button>
+        </div>
       </CardHeader>
       <CardBody className="space-y-3">
         {loading && !roadmap ? (
@@ -190,6 +224,14 @@ function MonthGroup({
             {month.frCount} FR{month.frCount === 1 ? "" : "s"} · {month.childCount} epic
             {month.childCount === 1 ? "" : "s"}
           </span>
+          {month.incompleteChildCount > 0 && (
+            <span
+              className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-warning"
+              title={`${month.incompleteChildCount} epic(s) missing planning fields`}
+            >
+              {month.incompleteChildCount} incomplete
+            </span>
+          )}
           {month.blockerCount > 0 && (
             <span className="inline-flex items-center gap-1 rounded border border-danger/40 bg-danger/10 px-1.5 py-0.5 font-mono text-danger">
               <ShieldAlert className="h-3 w-3" />
@@ -238,6 +280,14 @@ function FrRow({ fr, open, onToggle }: { fr: RoadmapFr; open: boolean; onToggle:
               {fr.blockerCount}
             </span>
           )}
+          {fr.incompleteChildCount > 0 && (
+            <span
+              className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-mono text-warning"
+              title={`${fr.incompleteChildCount} epic(s) missing planning fields`}
+            >
+              {fr.incompleteChildCount} incomplete
+            </span>
+          )}
           {fr.children.length > 0 && (
             <span className="text-[10px] text-fg-subtle">
               {fr.children.length} epic{fr.children.length === 1 ? "" : "s"}
@@ -274,6 +324,21 @@ function FrRow({ fr, open, onToggle }: { fr: RoadmapFr; open: boolean; onToggle:
                       <StatusChip status={c.status} />
                     </span>
                   </div>
+                  {c.missingFields.length > 0 ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] text-fg-subtle">missing:</span>
+                      {c.missingFields.map((f) => (
+                        <span
+                          key={f}
+                          className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                        >
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-[10px] text-success">✓ Due date, estimate &amp; sprint set</div>
+                  )}
                   {c.dependencies.length > 0 && (
                     <div className="mt-1.5 pl-1">
                       <DependencyList deps={c.dependencies} label={null} />
