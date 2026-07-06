@@ -106,7 +106,7 @@ export function buildMissingFieldsComment(opts: {
     inline.push({ type: "text", text: "This epic is unassigned — please assign an owner and add the following planning field(s): " });
   }
   inline.push({ type: "text", text: opts.missingFields.join(", "), marks: [{ type: "strong" }] });
-  inline.push({ type: "text", text: ". (Flagged from the FR Committed Roadmap view.)" });
+  inline.push({ type: "text", text: ". (Auto flagged)" });
   return { type: "doc", version: 1, content: [{ type: "paragraph", content: inline }] };
 }
 
