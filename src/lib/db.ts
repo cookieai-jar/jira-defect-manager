@@ -120,6 +120,14 @@ export function db(): DatabaseSync {
       ts TEXT NOT NULL
     );
 
+    -- FR roadmap: log of "ping assignee" comments posted per EAC epic, so the UI
+    -- can show how many times / how long ago an epic's owner was nudged.
+    CREATE TABLE IF NOT EXISTS roadmap_pings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      issue_key TEXT NOT NULL,
+      pinged_at TEXT NOT NULL
+    );
+
     -- Tenant Health: tenants the user has starred to watch (manual watch-list,
     -- separate from the configured white-glove customers).
     CREATE TABLE IF NOT EXISTS starred_tenants (
@@ -152,6 +160,7 @@ export function db(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_reports_scope_id ON reports(scope, id DESC);
     CREATE INDEX IF NOT EXISTS idx_p0_scope ON p0_customers(scope);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_health_snapshots_tenant_ts ON health_snapshots(tenant, ts);
+    CREATE INDEX IF NOT EXISTS idx_roadmap_pings_key ON roadmap_pings(issue_key);
   `);
 
   _db = conn;
@@ -478,6 +487,23 @@ export function starTenant(tenant: string): void {
 
 export function unstarTenant(tenant: string): void {
   db().prepare(`DELETE FROM starred_tenants WHERE tenant = ?`).run(tenant);
+}
+
+// --- FR roadmap ping log -------------------------------------------------------
+
+/** Record that an EAC epic's assignee was pinged (a comment was posted). */
+export function recordRoadmapPing(issueKey: string, at: string): void {
+  db().prepare(`INSERT INTO roadmap_pings (issue_key, pinged_at) VALUES (?, ?)`).run(issueKey, at);
+}
+
+/** Ping count + most-recent ping timestamp per EAC epic. */
+export function pingStatsByIssue(): Map<string, { count: number; lastPingedAt: string }> {
+  const rows = db()
+    .prepare(`SELECT issue_key, count(*) c, max(pinged_at) last FROM roadmap_pings GROUP BY issue_key`)
+    .all() as { issue_key: string; c: number; last: string }[];
+  const m = new Map<string, { count: number; lastPingedAt: string }>();
+  for (const r of rows) m.set(r.issue_key, { count: r.c, lastPingedAt: r.last });
+  return m;
 }
 
 // --- health snapshots (trend history) -----------------------------------------

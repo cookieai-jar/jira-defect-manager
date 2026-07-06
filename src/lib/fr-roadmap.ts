@@ -135,11 +135,13 @@ export function buildCommittedRoadmap(
   children: RoadmapIssueInput[],
   baseUrl: string,
   now: number = Date.now(),
+  pingStats: Map<string, { count: number; lastPingedAt: string }> = new Map(),
 ): CommittedRoadmap {
   const browse = (key: string) => `${baseUrl.replace(/\/$/, "")}/browse/${key}`;
   const childrenByParent = new Map<string, RoadmapChild[]>();
   for (const c of children) {
     if (!c.parentKey) continue;
+    const ping = pingStats.get(c.key);
     const child: RoadmapChild = {
       key: c.key,
       summary: c.summary,
@@ -150,6 +152,8 @@ export function buildCommittedRoadmap(
       dependencies: c.dependencies,
       missingFields: c.missingFields,
       assignee: c.assignee,
+      pingCount: ping?.count ?? 0,
+      lastPingedAt: ping?.lastPingedAt ?? null,
     };
     const list = childrenByParent.get(c.parentKey) ?? [];
     list.push(child);

@@ -311,8 +311,17 @@ function FrRow({ fr, open, onToggle }: { fr: RoadmapFr; open: boolean; onToggle:
   );
 }
 
+function daysAgoLabel(iso: string): string {
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  return d <= 0 ? "today" : d === 1 ? "1 day ago" : `${d} days ago`;
+}
+
 function EacChildRow({ child: c }: { child: RoadmapChild }) {
   const [ping, setPing] = useState<{ state: "idle" | "busy" | "done" | "error"; msg?: string }>({ state: "idle" });
+  const [bumped, setBumped] = useState(false); // optimistically count this session's ping
+
+  const pingCount = c.pingCount + (bumped ? 1 : 0);
+  const lastPingedAt = bumped ? new Date().toISOString() : c.lastPingedAt;
 
   const doPing = async () => {
     const who = c.assignee ? c.assignee.displayName : "this unassigned epic";
@@ -329,8 +338,10 @@ function EacChildRow({ child: c }: { child: RoadmapChild }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ issueKey: c.key }),
       }).then((r) => r.json())) as { ok: boolean; posted?: boolean; message?: string; error?: string };
-      if (res.ok && res.posted) setPing({ state: "done", msg: `Pinged ${c.assignee?.displayName ?? "assignee"}` });
-      else if (res.ok) setPing({ state: "done", msg: res.message ?? "Nothing to ping" });
+      if (res.ok && res.posted) {
+        setBumped(true);
+        setPing({ state: "done", msg: `Pinged ${c.assignee?.displayName ?? "assignee"}` });
+      } else if (res.ok) setPing({ state: "done", msg: res.message ?? "Nothing to ping" });
       else setPing({ state: "error", msg: res.error ?? "Failed" });
     } catch (e) {
       setPing({ state: "error", msg: e instanceof Error ? e.message : "Failed" });
@@ -386,6 +397,14 @@ function EacChildRow({ child: c }: { child: RoadmapChild }) {
               <AtSign className="h-3 w-3" />
               {ping.state === "busy" ? "Pinging…" : c.assignee ? `Ping ${c.assignee.displayName}` : "Comment"}
             </button>
+          )}
+          {pingCount > 0 && lastPingedAt && (
+            <span
+              className="ml-1 text-[10px] text-fg-subtle"
+              title={`Last pinged ${new Date(lastPingedAt).toLocaleString()}`}
+            >
+              pinged {pingCount}× · {daysAgoLabel(lastPingedAt)}
+            </span>
           )}
         </div>
       ) : (

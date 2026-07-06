@@ -28,7 +28,15 @@ export async function GET() {
     const childGroups = await Promise.all(batches.map((g) => searchRoadmapIssues(`parent in (${g.join(",")})`, 2000)));
     const children: RoadmapIssueInput[] = childGroups.flat();
 
-    const roadmap = buildCommittedRoadmap(withMonth, children, baseUrl);
+    // Ping history (best-effort; dynamic import keeps node:sqlite out of the static graph).
+    let pingStats = new Map<string, { count: number; lastPingedAt: string }>();
+    try {
+      pingStats = (await import("@/lib/db")).pingStatsByIssue();
+    } catch (e) {
+      console.warn("[fr-roadmap] ping stats unavailable:", e instanceof Error ? e.message : e);
+    }
+
+    const roadmap = buildCommittedRoadmap(withMonth, children, baseUrl, Date.now(), pingStats);
     return NextResponse.json({ roadmap });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

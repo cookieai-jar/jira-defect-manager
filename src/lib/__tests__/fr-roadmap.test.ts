@@ -164,6 +164,19 @@ describe("buildCommittedRoadmap", () => {
     expect(rm.months[0].frs[0].blockerCount).toBe(1); // same UP-1, not 2
   });
 
+  it("attaches ping stats (count + last) to children from the ping log", () => {
+    const rm = buildCommittedRoadmap(
+      [fr({ key: "FR-1" })],
+      [fr({ key: "EAC-1", parentKey: "FR-1", targetedMonth: null })],
+      "https://j",
+      now,
+      new Map([["EAC-1", { count: 3, lastPingedAt: "2026-07-01T00:00:00.000Z" }]]),
+    );
+    const child = rm.months[0].frs[0].children[0];
+    expect(child.pingCount).toBe(3);
+    expect(child.lastPingedAt).toBe("2026-07-01T00:00:00.000Z");
+  });
+
   it("returns empty months (and no dropped) when nothing is committed", () => {
     const rm = buildCommittedRoadmap([fr({ targetedMonth: null })], [], "https://j", now);
     expect(rm.months).toEqual([]);

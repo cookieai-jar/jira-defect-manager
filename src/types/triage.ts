@@ -107,6 +107,10 @@ export interface RoadmapChild {
   missingFields: string[];
   /** Assignee, for the "ping to fill fields" action; null when unassigned. */
   assignee: { accountId: string; displayName: string } | null;
+  /** How many times this epic has been pinged (from our ping log). */
+  pingCount: number;
+  /** ISO timestamp of the last ping, or null if never pinged. */
+  lastPingedAt: string | null;
 }
 
 /** One committed FR within a target month, with its child epics + dependencies. */

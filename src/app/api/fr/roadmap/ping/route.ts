@@ -30,6 +30,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, posted: false, message: "Nothing to ping." });
     }
     await addIssueComment(issueKey, body);
+    // Log the ping (best-effort; dynamic import keeps node:sqlite out of the static graph).
+    try {
+      (await import("@/lib/db")).recordRoadmapPing(issueKey, new Date().toISOString());
+    } catch (e) {
+      console.warn("[fr-ping] failed to log ping:", e instanceof Error ? e.message : e);
+    }
     return NextResponse.json({
       ok: true,
       posted: true,
