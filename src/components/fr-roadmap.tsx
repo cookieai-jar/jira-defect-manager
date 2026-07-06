@@ -250,10 +250,19 @@ function MonthGroup({
 function FrRow({ fr, open, onToggle }: { fr: RoadmapFr; open: boolean; onToggle: () => void }) {
   return (
     <div>
-      <div className="flex items-center gap-2 px-3 py-1.5 hover:bg-bg-muted/20">
-        <button type="button" onClick={onToggle} className="inline-flex shrink-0 text-fg-subtle hover:text-accent">
-          <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
-        </button>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-bg-muted/20"
+      >
+        <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-fg-subtle transition-transform", open && "rotate-90")} />
         <a
           href={fr.url}
           target="_blank"
