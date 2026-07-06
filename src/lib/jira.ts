@@ -1,5 +1,5 @@
 import type { JiraIssue, JiraComment, ResolvedTicketRef, RoadmapDependency } from "@/types/triage";
-import { classifyDependency, missingEacFields, type RoadmapIssueInput } from "@/lib/fr-roadmap";
+import { classifyDependency, missingEacFields, pingStatsFromComments, type RoadmapIssueInput } from "@/lib/fr-roadmap";
 
 /** JIRA field ids for the EAC planning fields the roadmap flags when unset. */
 const DUE_DATE_FIELD = "duedate";
@@ -317,6 +317,7 @@ interface RawRoadmapIssue {
     parent?: { key: string } | null;
     issuelinks?: RawIssueLink[];
     assignee?: { accountId?: string; displayName?: string } | null;
+    comment?: { comments?: Array<{ created: string; body: unknown }> } | null;
     [TARGETED_MONTH_FIELD]?: JiraOption | null;
     [DUE_DATE_FIELD]?: string | null;
     [ORIGINAL_ESTIMATE_FIELD]?: number | null;
@@ -331,6 +332,7 @@ const ROADMAP_FIELDS = [
   "parent",
   "issuelinks",
   "assignee",
+  "comment",
   TARGETED_MONTH_FIELD,
   DUE_DATE_FIELD,
   ORIGINAL_ESTIMATE_FIELD,
@@ -340,6 +342,9 @@ const ROADMAP_FIELDS = [
 /** PURE-ish. Map one raw roadmap issue to a RoadmapIssueInput. */
 function toRoadmapInput(raw: RawRoadmapIssue, baseUrl: string): RoadmapIssueInput {
   const acc = raw.fields.assignee;
+  const pings = pingStatsFromComments(
+    (raw.fields.comment?.comments ?? []).map((c) => ({ createdAt: c.created, text: adfToPlainText(c.body) })),
+  );
   return {
     key: raw.key,
     summary: raw.fields.summary,
@@ -355,6 +360,8 @@ function toRoadmapInput(raw: RawRoadmapIssue, baseUrl: string): RoadmapIssueInpu
       sprint: raw.fields[SPRINT_FIELD],
     }),
     assignee: acc?.accountId ? { accountId: acc.accountId, displayName: acc.displayName ?? "assignee" } : null,
+    pingCount: pings.count,
+    lastPingedAt: pings.lastPingedAt,
   };
 }
 

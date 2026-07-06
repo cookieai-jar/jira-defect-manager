@@ -6,6 +6,7 @@ import {
   buildCommittedRoadmap,
   missingEacFields,
   buildMissingFieldsComment,
+  pingStatsFromComments,
   type RoadmapIssueInput,
 } from "@/lib/fr-roadmap";
 import type { RoadmapDependency } from "@/types/triage";
@@ -67,6 +68,24 @@ describe("missingEacFields", () => {
   });
 });
 
+describe("pingStatsFromComments", () => {
+  it("counts our ping comments (both footer variants) + the latest date, ignoring human comments", () => {
+    const r = pingStatsFromComments([
+      { createdAt: "2026-06-01T00:00:00Z", text: "please add the following planning field(s): Sprint. (Auto flagged)" },
+      { createdAt: "2026-05-01T00:00:00Z", text: "old ping (Flagged from the FR Committed Roadmap view.)" },
+      { createdAt: "2026-07-01T00:00:00Z", text: "Met with team to discuss scope." }, // human, ignored
+    ]);
+    expect(r.count).toBe(2);
+    expect(r.lastPingedAt).toBe("2026-06-01T00:00:00Z"); // latest ping, not the human comment
+  });
+  it("returns 0/null when there are no ping comments", () => {
+    expect(pingStatsFromComments([{ createdAt: "2026-07-01T00:00:00Z", text: "design updated" }])).toEqual({
+      count: 0,
+      lastPingedAt: null,
+    });
+  });
+});
+
 describe("buildMissingFieldsComment", () => {
   it("@mentions the assignee and bolds the missing fields", () => {
     const doc = buildMissingFieldsComment({ assigneeAccountId: "acc-1", assigneeName: "Ada", missingFields: ["Sprint", "Due Date"] })!;
@@ -110,6 +129,8 @@ function fr(over: Partial<RoadmapIssueInput> = {}): RoadmapIssueInput {
     dependencies: [],
     missingFields: [],
     assignee: null,
+    pingCount: 0,
+    lastPingedAt: null,
     ...over,
   };
 }
@@ -164,13 +185,12 @@ describe("buildCommittedRoadmap", () => {
     expect(rm.months[0].frs[0].blockerCount).toBe(1); // same UP-1, not 2
   });
 
-  it("attaches ping stats (count + last) to children from the ping log", () => {
+  it("carries each child's ping stats through to the RoadmapChild", () => {
     const rm = buildCommittedRoadmap(
       [fr({ key: "FR-1" })],
-      [fr({ key: "EAC-1", parentKey: "FR-1", targetedMonth: null })],
+      [fr({ key: "EAC-1", parentKey: "FR-1", targetedMonth: null, pingCount: 3, lastPingedAt: "2026-07-01T00:00:00.000Z" })],
       "https://j",
       now,
-      new Map([["EAC-1", { count: 3, lastPingedAt: "2026-07-01T00:00:00.000Z" }]]),
     );
     const child = rm.months[0].frs[0].children[0];
     expect(child.pingCount).toBe(3);

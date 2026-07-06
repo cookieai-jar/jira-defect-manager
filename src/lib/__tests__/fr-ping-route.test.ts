@@ -25,6 +25,8 @@ const issue = (over: Partial<RoadmapIssueInput> = {}): RoadmapIssueInput => ({
   dependencies: [],
   missingFields: ["Sprint"],
   assignee: { accountId: "acc-1", displayName: "Ada" },
+  pingCount: 0,
+  lastPingedAt: null,
   ...over,
 });
 

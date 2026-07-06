@@ -110,6 +110,22 @@ export function buildMissingFieldsComment(opts: {
   return { type: "doc", version: 1, content: [{ type: "paragraph", content: inline }] };
 }
 
+/** Markers that identify one of OUR "ping assignee" comments (any footer variant). */
+const PING_MARKERS = [/\(auto flagged\)/i, /flagged from the fr committed roadmap/i];
+
+/**
+ * PURE. Count our ping comments on an issue + the most-recent one's timestamp.
+ * Authoritative + retroactive: the JIRA comment IS the ping record.
+ */
+export function pingStatsFromComments(
+  comments: { createdAt: string; text: string }[],
+): { count: number; lastPingedAt: string | null } {
+  const pings = comments.filter((c) => PING_MARKERS.some((m) => m.test(c.text)));
+  if (pings.length === 0) return { count: 0, lastPingedAt: null };
+  const last = pings.reduce((a, b) => (a.createdAt > b.createdAt ? a : b)).createdAt;
+  return { count: pings.length, lastPingedAt: last };
+}
+
 /** A lightweight issue (FR or child epic) with parsed dependency links. */
 export interface RoadmapIssueInput {
   key: string;
@@ -123,6 +139,9 @@ export interface RoadmapIssueInput {
   /** Unset planning fields (children only); [] for FRs. */
   missingFields: string[];
   assignee: { accountId: string; displayName: string } | null;
+  /** Ping count + last-ping timestamp, derived from the issue's ping comments. */
+  pingCount: number;
+  lastPingedAt: string | null;
 }
 
 /**
@@ -135,13 +154,11 @@ export function buildCommittedRoadmap(
   children: RoadmapIssueInput[],
   baseUrl: string,
   now: number = Date.now(),
-  pingStats: Map<string, { count: number; lastPingedAt: string }> = new Map(),
 ): CommittedRoadmap {
   const browse = (key: string) => `${baseUrl.replace(/\/$/, "")}/browse/${key}`;
   const childrenByParent = new Map<string, RoadmapChild[]>();
   for (const c of children) {
     if (!c.parentKey) continue;
-    const ping = pingStats.get(c.key);
     const child: RoadmapChild = {
       key: c.key,
       summary: c.summary,
@@ -152,8 +169,8 @@ export function buildCommittedRoadmap(
       dependencies: c.dependencies,
       missingFields: c.missingFields,
       assignee: c.assignee,
-      pingCount: ping?.count ?? 0,
-      lastPingedAt: ping?.lastPingedAt ?? null,
+      pingCount: c.pingCount,
+      lastPingedAt: c.lastPingedAt,
     };
     const list = childrenByParent.get(c.parentKey) ?? [];
     list.push(child);
