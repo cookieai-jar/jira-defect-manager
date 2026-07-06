@@ -316,10 +316,45 @@ interface RawRoadmapIssue {
     issuetype: { name: string };
     parent?: { key: string } | null;
     issuelinks?: RawIssueLink[];
+    assignee?: { accountId?: string; displayName?: string } | null;
     [TARGETED_MONTH_FIELD]?: JiraOption | null;
     [DUE_DATE_FIELD]?: string | null;
     [ORIGINAL_ESTIMATE_FIELD]?: number | null;
     [SPRINT_FIELD]?: unknown[] | null;
+  };
+}
+
+const ROADMAP_FIELDS = [
+  "summary",
+  "status",
+  "issuetype",
+  "parent",
+  "issuelinks",
+  "assignee",
+  TARGETED_MONTH_FIELD,
+  DUE_DATE_FIELD,
+  ORIGINAL_ESTIMATE_FIELD,
+  SPRINT_FIELD,
+];
+
+/** PURE-ish. Map one raw roadmap issue to a RoadmapIssueInput. */
+function toRoadmapInput(raw: RawRoadmapIssue, baseUrl: string): RoadmapIssueInput {
+  const acc = raw.fields.assignee;
+  return {
+    key: raw.key,
+    summary: raw.fields.summary,
+    status: raw.fields.status.name,
+    statusCategory: statusCat(raw.fields.status.statusCategory.key),
+    issueType: raw.fields.issuetype.name,
+    parentKey: raw.fields.parent?.key ?? null,
+    targetedMonth: raw.fields[TARGETED_MONTH_FIELD]?.value?.trim() || null,
+    dependencies: parseDependencies(raw.fields.issuelinks, baseUrl),
+    missingFields: missingEacFields({
+      dueDate: raw.fields[DUE_DATE_FIELD],
+      originalEstimate: raw.fields[ORIGINAL_ESTIMATE_FIELD],
+      sprint: raw.fields[SPRINT_FIELD],
+    }),
+    assignee: acc?.accountId ? { accountId: acc.accountId, displayName: acc.displayName ?? "assignee" } : null,
   };
 }
 
@@ -335,17 +370,7 @@ export async function searchRoadmapIssues(jql: string, maxResults = 1000): Promi
   while (out.length < maxResults) {
     const body: Record<string, unknown> = {
       jql,
-      fields: [
-        "summary",
-        "status",
-        "issuetype",
-        "parent",
-        "issuelinks",
-        TARGETED_MONTH_FIELD,
-        DUE_DATE_FIELD,
-        ORIGINAL_ESTIMATE_FIELD,
-        SPRINT_FIELD,
-      ],
+      fields: ROADMAP_FIELDS,
       maxResults: Math.min(100, maxResults - out.length),
     };
     if (nextPageToken) body.nextPageToken = nextPageToken;
@@ -353,27 +378,28 @@ export async function searchRoadmapIssues(jql: string, maxResults = 1000): Promi
       "/rest/api/3/search/jql",
       { method: "POST", body: JSON.stringify(body) },
     );
-    for (const raw of res.issues) {
-      out.push({
-        key: raw.key,
-        summary: raw.fields.summary,
-        status: raw.fields.status.name,
-        statusCategory: statusCat(raw.fields.status.statusCategory.key),
-        issueType: raw.fields.issuetype.name,
-        parentKey: raw.fields.parent?.key ?? null,
-        targetedMonth: raw.fields[TARGETED_MONTH_FIELD]?.value?.trim() || null,
-        dependencies: parseDependencies(raw.fields.issuelinks, e.baseUrl),
-        missingFields: missingEacFields({
-          dueDate: raw.fields[DUE_DATE_FIELD],
-          originalEstimate: raw.fields[ORIGINAL_ESTIMATE_FIELD],
-          sprint: raw.fields[SPRINT_FIELD],
-        }),
-      });
-    }
+    for (const raw of res.issues) out.push(toRoadmapInput(raw, e.baseUrl));
     if (res.isLast || !res.nextPageToken || res.issues.length === 0) break;
     nextPageToken = res.nextPageToken;
   }
   return out;
+}
+
+/** Fetch a single issue as a roadmap record (fresh assignee + missing-field state). */
+export async function fetchRoadmapIssue(key: string): Promise<RoadmapIssueInput> {
+  const e = env();
+  const raw = await jiraFetch<RawRoadmapIssue>(
+    `/rest/api/3/issue/${encodeURIComponent(key)}?fields=${ROADMAP_FIELDS.join(",")}`,
+  );
+  return toRoadmapInput(raw, e.baseUrl);
+}
+
+/** Post a comment (ADF body) to an issue. Outward-facing — notifies watchers/mentions. */
+export async function addIssueComment(key: string, body: unknown): Promise<void> {
+  await jiraFetch(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
 }
 
 interface TrendIssue {

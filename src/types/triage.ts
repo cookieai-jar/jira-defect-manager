@@ -105,6 +105,8 @@ export interface RoadmapChild {
   dependencies: RoadmapDependency[];
   /** Planning fields that are unset (subset of "Due Date"/"Original Estimate"/"Sprint"). */
   missingFields: string[];
+  /** Assignee, for the "ping to fill fields" action; null when unassigned. */
+  assignee: { accountId: string; displayName: string } | null;
 }
 
 /** One committed FR within a target month, with its child epics + dependencies. */

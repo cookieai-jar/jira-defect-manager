@@ -84,6 +84,32 @@ export function missingEacFields(v: {
   return missing;
 }
 
+/** An Atlassian Document Format node (loose — we only build a small subset). */
+type AdfNode = { type: string; [k: string]: unknown };
+
+/**
+ * PURE. Build the ADF comment body that pings the assignee to fill missing
+ * planning fields. @mentions the assignee when known; otherwise asks for an
+ * owner + the fields. Returns null when nothing is missing (never comment).
+ */
+export function buildMissingFieldsComment(opts: {
+  assigneeAccountId: string | null;
+  assigneeName: string | null;
+  missingFields: string[];
+}): { type: "doc"; version: 1; content: AdfNode[] } | null {
+  if (opts.missingFields.length === 0) return null;
+  const inline: AdfNode[] = [];
+  if (opts.assigneeAccountId) {
+    inline.push({ type: "mention", attrs: { id: opts.assigneeAccountId, text: `@${opts.assigneeName ?? "assignee"}` } });
+    inline.push({ type: "text", text: " — please add the following planning field(s) so this epic can be scheduled: " });
+  } else {
+    inline.push({ type: "text", text: "This epic is unassigned — please assign an owner and add the following planning field(s): " });
+  }
+  inline.push({ type: "text", text: opts.missingFields.join(", "), marks: [{ type: "strong" }] });
+  inline.push({ type: "text", text: ". (Flagged from the FR Committed Roadmap view.)" });
+  return { type: "doc", version: 1, content: [{ type: "paragraph", content: inline }] };
+}
+
 /** A lightweight issue (FR or child epic) with parsed dependency links. */
 export interface RoadmapIssueInput {
   key: string;
@@ -96,6 +122,7 @@ export interface RoadmapIssueInput {
   dependencies: RoadmapDependency[];
   /** Unset planning fields (children only); [] for FRs. */
   missingFields: string[];
+  assignee: { accountId: string; displayName: string } | null;
 }
 
 /**
@@ -122,6 +149,7 @@ export function buildCommittedRoadmap(
       url: browse(c.key),
       dependencies: c.dependencies,
       missingFields: c.missingFields,
+      assignee: c.assignee,
     };
     const list = childrenByParent.get(c.parentKey) ?? [];
     list.push(child);

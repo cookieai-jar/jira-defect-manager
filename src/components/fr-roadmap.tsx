@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarClock, ChevronRight, ExternalLink, RefreshCw, ShieldAlert } from "lucide-react";
+import { AtSign, CalendarClock, ChevronRight, ExternalLink, RefreshCw, ShieldAlert } from "lucide-react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusChip } from "@/components/jira-chips";
 import { monthKeyOf } from "@/lib/fr-roadmap";
 import { cn } from "@/lib/utils";
-import type { CommittedRoadmap, CommittedMonth, RoadmapFr, RoadmapDependency } from "@/types/triage";
+import type { CommittedRoadmap, CommittedMonth, RoadmapFr, RoadmapChild, RoadmapDependency } from "@/types/triage";
 
 /** Month key offset from now (handles year wrap), e.g. -1 = previous month. */
 function shiftedMonthKey(now: number, delta: number): string {
@@ -301,49 +301,99 @@ function FrRow({ fr, open, onToggle }: { fr: RoadmapFr; open: boolean; onToggle:
             <div className="space-y-1.5">
               <div className="text-[10px] uppercase tracking-wide text-fg-subtle">Child EAC tickets</div>
               {fr.children.map((c) => (
-                <div key={c.key} className="rounded border border-border bg-bg-card px-2.5 py-1.5">
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={c.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-accent hover:underline shrink-0"
-                    >
-                      {c.key}
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                    <span className="text-[10px] text-fg-subtle shrink-0">{c.type}</span>
-                    <span className="truncate text-xs text-fg-muted" title={c.summary}>
-                      {c.summary}
-                    </span>
-                    <span className="ml-auto shrink-0">
-                      <StatusChip status={c.status} />
-                    </span>
-                  </div>
-                  {c.missingFields.length > 0 ? (
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] text-fg-subtle">missing:</span>
-                      {c.missingFields.map((f) => (
-                        <span
-                          key={f}
-                          className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
-                        >
-                          {f}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-1 text-[10px] text-success">✓ Due date, estimate &amp; sprint set</div>
-                  )}
-                  {c.dependencies.length > 0 && (
-                    <div className="mt-1.5 pl-1">
-                      <DependencyList deps={c.dependencies} label={null} />
-                    </div>
-                  )}
-                </div>
+                <EacChildRow key={c.key} child={c} />
               ))}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EacChildRow({ child: c }: { child: RoadmapChild }) {
+  const [ping, setPing] = useState<{ state: "idle" | "busy" | "done" | "error"; msg?: string }>({ state: "idle" });
+
+  const doPing = async () => {
+    const who = c.assignee ? c.assignee.displayName : "this unassigned epic";
+    if (
+      !window.confirm(
+        `Post a comment on ${c.key} pinging ${who} to add: ${c.missingFields.join(", ")}?\n\nThis notifies them in JIRA.`,
+      )
+    )
+      return;
+    setPing({ state: "busy" });
+    try {
+      const res = (await fetch("/api/fr/roadmap/ping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueKey: c.key }),
+      }).then((r) => r.json())) as { ok: boolean; posted?: boolean; message?: string; error?: string };
+      if (res.ok && res.posted) setPing({ state: "done", msg: `Pinged ${c.assignee?.displayName ?? "assignee"}` });
+      else if (res.ok) setPing({ state: "done", msg: res.message ?? "Nothing to ping" });
+      else setPing({ state: "error", msg: res.error ?? "Failed" });
+    } catch (e) {
+      setPing({ state: "error", msg: e instanceof Error ? e.message : "Failed" });
+    }
+  };
+
+  return (
+    <div className="rounded border border-border bg-bg-card px-2.5 py-1.5">
+      <div className="flex items-center gap-2">
+        <a
+          href={c.url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-accent hover:underline shrink-0"
+        >
+          {c.key}
+          <ExternalLink className="h-3 w-3" />
+        </a>
+        <span className="text-[10px] text-fg-subtle shrink-0">{c.type}</span>
+        <span className="truncate text-xs text-fg-muted" title={c.summary}>
+          {c.summary}
+        </span>
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          {c.assignee && <span className="text-[10px] text-fg-subtle">{c.assignee.displayName}</span>}
+          <StatusChip status={c.status} />
+        </span>
+      </div>
+      {c.missingFields.length > 0 ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          <span className="text-[10px] text-fg-subtle">missing:</span>
+          {c.missingFields.map((f) => (
+            <span
+              key={f}
+              className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+            >
+              {f}
+            </span>
+          ))}
+          {ping.state === "done" ? (
+            <span className="ml-1 text-[10px] text-success">✓ {ping.msg}</span>
+          ) : ping.state === "error" ? (
+            <span className="ml-1 text-[10px] text-danger" title={ping.msg}>
+              ⚠ {ping.msg}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={doPing}
+              disabled={ping.state === "busy"}
+              title={`Comment on ${c.key} pinging the assignee to fill these fields`}
+              className="ml-1 inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors disabled:opacity-60"
+            >
+              <AtSign className="h-3 w-3" />
+              {ping.state === "busy" ? "Pinging…" : c.assignee ? `Ping ${c.assignee.displayName}` : "Comment"}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-1 text-[10px] text-success">✓ Due date, estimate &amp; sprint set</div>
+      )}
+      {c.dependencies.length > 0 && (
+        <div className="mt-1.5 pl-1">
+          <DependencyList deps={c.dependencies} label={null} />
         </div>
       )}
     </div>

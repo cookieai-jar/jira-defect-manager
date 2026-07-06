@@ -5,6 +5,7 @@ import {
   monthKeyOf,
   buildCommittedRoadmap,
   missingEacFields,
+  buildMissingFieldsComment,
   type RoadmapIssueInput,
 } from "@/lib/fr-roadmap";
 import type { RoadmapDependency } from "@/types/triage";
@@ -66,6 +67,25 @@ describe("missingEacFields", () => {
   });
 });
 
+describe("buildMissingFieldsComment", () => {
+  it("@mentions the assignee and bolds the missing fields", () => {
+    const doc = buildMissingFieldsComment({ assigneeAccountId: "acc-1", assigneeName: "Ada", missingFields: ["Sprint", "Due Date"] })!;
+    const nodes = doc.content[0].content as Array<Record<string, unknown>>;
+    expect(nodes[0]).toEqual({ type: "mention", attrs: { id: "acc-1", text: "@Ada" } });
+    const bold = nodes.find((n) => Array.isArray(n.marks));
+    expect(bold).toMatchObject({ text: "Sprint, Due Date" });
+  });
+  it("handles an unassigned epic without a mention", () => {
+    const doc = buildMissingFieldsComment({ assigneeAccountId: null, assigneeName: null, missingFields: ["Sprint"] })!;
+    const nodes = doc.content[0].content as Array<Record<string, unknown>>;
+    expect(nodes.some((n) => n.type === "mention")).toBe(false);
+    expect((nodes[0].text as string).toLowerCase()).toContain("unassigned");
+  });
+  it("returns null when nothing is missing (never comment)", () => {
+    expect(buildMissingFieldsComment({ assigneeAccountId: "a", assigneeName: "A", missingFields: [] })).toBeNull();
+  });
+});
+
 function dep(over: Partial<RoadmapDependency> = {}): RoadmapDependency {
   return {
     key: "X-1",
@@ -89,6 +109,7 @@ function fr(over: Partial<RoadmapIssueInput> = {}): RoadmapIssueInput {
     targetedMonth: "Jul '26",
     dependencies: [],
     missingFields: [],
+    assignee: null,
     ...over,
   };
 }
