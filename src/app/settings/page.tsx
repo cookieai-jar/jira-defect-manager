@@ -137,7 +137,9 @@ export default function SettingsPage() {
                     ? "Customer support / bug triage view."
                     : s === "fr"
                       ? "Feature request triage view."
-                      : "Security vulnerability and PII triage view."
+                      : s === "sec"
+                        ? "Security vulnerability and PII triage view."
+                        : "On-call alert triage view (integrations:on-call-triage)."
                 }
               />
             ))}

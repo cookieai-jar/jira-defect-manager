@@ -11,21 +11,18 @@ const HOUR = 60 * 60 * 1000;
 const NOW = 1_000_000_000_000; // fixed "now"
 
 describe("autoSyncScopes", () => {
-  it("returns all three triage scopes when dashboards are enabled", () => {
-    expect(autoSyncScopes({ dashboards: { eac: true, fr: true, sec: true } })).toEqual([
-      "eac",
-      "fr",
-      "sec",
-    ]);
+  it("returns all triage scopes when dashboards are enabled", () => {
+    expect(
+      autoSyncScopes({ dashboards: { eac: true, fr: true, sec: true, alerts: true } }),
+    ).toEqual(["eac", "fr", "sec", "alerts"]);
   });
   it("excludes scopes whose dashboard is disabled", () => {
-    expect(autoSyncScopes({ dashboards: { eac: true, fr: false, sec: true } })).toEqual([
-      "eac",
-      "sec",
-    ]);
+    expect(
+      autoSyncScopes({ dashboards: { eac: true, fr: false, sec: true, alerts: false } }),
+    ).toEqual(["eac", "sec"]);
   });
   it("treats missing dashboard flags as enabled (only explicit false excludes)", () => {
-    expect(autoSyncScopes({ dashboards: {} as never })).toEqual(["eac", "fr", "sec"]);
+    expect(autoSyncScopes({ dashboards: {} as never })).toEqual(["eac", "fr", "sec", "alerts"]);
   });
 });
 

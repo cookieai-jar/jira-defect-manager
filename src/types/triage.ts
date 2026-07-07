@@ -18,21 +18,22 @@ export interface PriorityDecision {
   revisitReason: string | null;
 }
 
-export type Scope = "eac" | "fr" | "sec";
+export type Scope = "eac" | "fr" | "sec" | "alerts";
 
-export const SCOPES: readonly Scope[] = ["eac", "fr", "sec"] as const;
+export const SCOPES: readonly Scope[] = ["eac", "fr", "sec", "alerts"] as const;
 
 export const SCOPE_LABELS: Record<Scope, string> = {
   eac: "Customer",
   fr: "FR",
   sec: "Security",
+  alerts: "Alerts",
 };
 
 /** Scopes that have a P0 customer correlation section on their dashboard. */
 export const SCOPES_WITH_P0: readonly Scope[] = ["eac", "fr"] as const;
 
 export function isScope(s: string | null | undefined): s is Scope {
-  return s === "eac" || s === "fr" || s === "sec";
+  return s === "eac" || s === "fr" || s === "sec" || s === "alerts";
 }
 
 export function scopeHasP0(scope: Scope): boolean {
