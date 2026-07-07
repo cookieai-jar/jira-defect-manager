@@ -9,6 +9,7 @@ import { Check, CircleAlert, Loader2, Save } from "lucide-react";
 import type { AppConfig } from "@/types/triage";
 import { SCOPES, SCOPE_LABELS } from "@/types/triage";
 import { Toggle } from "@/components/ui/toggle";
+import { WhiteGloveCustomers } from "@/components/white-glove-customers";
 
 interface Health {
   jira: { ok: true; user: string } | { ok: false; error: string };
@@ -148,6 +149,8 @@ export default function SettingsPage() {
             />
           </CardBody>
         </Card>
+
+        <WhiteGloveCustomers />
 
         {SCOPES.map((s) => (
           <Card key={s}>

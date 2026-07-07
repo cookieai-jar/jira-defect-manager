@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Settings,
-  Star,
   Activity,
   ClipboardList,
   ShieldAlert,
@@ -33,7 +32,6 @@ const ALL_ITEMS: NavItem[] = [
   { href: "/security", label: "Vulnerabilities", icon: ShieldAlert, scope: "sec" },
   { href: "/integrations", label: "Integrations Hardening", icon: Boxes, flag: "siDashboard" },
   { href: "/tenants", label: "Tenant Health", icon: HeartPulse, flag: "tenantDashboard" },
-  { href: "/p0", label: "White-glove Customers", icon: Star },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

@@ -318,11 +318,11 @@ export function DashboardView({ scope, title }: Props) {
                         </p>
                         <p className="text-xs text-fg-subtle">
                           Either no customer&apos;s JQL fragment matches a {SCOPE_LABELS[scope]} ticket, or
-                          no white-glove customers are configured on the{" "}
-                          <a href="/p0" className="text-accent underline">
-                            White-glove Customers
-                          </a>{" "}
-                          page.
+                          no white-glove customers are configured in{" "}
+                          <a href="/settings" className="text-accent underline">
+                            Settings
+                          </a>
+                          .
                         </p>
                       </CardBody>
                     </Card>
