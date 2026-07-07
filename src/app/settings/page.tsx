@@ -140,6 +140,12 @@ export default function SettingsPage() {
                 }
               />
             ))}
+            <Toggle
+              checked={config.siDashboard}
+              onChange={(next) => setConfig({ ...config, siDashboard: next })}
+              label="Show Integrations Hardening"
+              description="Cross-ticket pattern analysis of integration defects: issue categories, root causes, and developer/QE hardening steps."
+            />
           </CardBody>
         </Card>
 
@@ -171,6 +177,29 @@ export default function SettingsPage() {
             </CardBody>
           </Card>
         ))}
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Integrations Hardening scope</CardTitle>
+            <span className="text-[11px] text-fg-subtle">
+              Tickets pulled for the deep pattern analysis
+            </span>
+          </CardHeader>
+          <CardBody className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Integrations Hardening JQL</Label>
+              <Textarea
+                value={config.siJql}
+                onChange={(e) => setConfig({ ...config, siJql: e.target.value })}
+                placeholder="project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC"
+              />
+              <p className="text-[11px] text-fg-subtle">
+                Every ticket matched here is run through the deep analysis to surface recurring issue
+                categories, root causes, and developer/QE hardening steps.
+              </p>
+            </div>
+          </CardBody>
+        </Card>
 
         <Card>
           <CardHeader>

@@ -28,10 +28,10 @@ interface NavItem {
 }
 
 const ALL_ITEMS: NavItem[] = [
-  { href: "/", label: "Customer Dashboard", icon: LayoutDashboard, scope: "eac" },
-  { href: "/fr/poc", label: "FR Dashboard", icon: ClipboardList, scope: "fr" },
-  { href: "/security", label: "Security Dashboard", icon: ShieldAlert, scope: "sec" },
-  { href: "/integrations", label: "Strategic Integrations", icon: Boxes, flag: "siDashboard" },
+  { href: "/", label: "Customer Defects", icon: LayoutDashboard, scope: "eac" },
+  { href: "/fr/poc", label: "Feature Requests", icon: ClipboardList, scope: "fr" },
+  { href: "/security", label: "Vulnerabilities", icon: ShieldAlert, scope: "sec" },
+  { href: "/integrations", label: "Integrations Hardening", icon: Boxes, flag: "siDashboard" },
   { href: "/tenants", label: "Tenant Health", icon: HeartPulse, flag: "tenantDashboard" },
   { href: "/p0", label: "White-glove Customers", icon: Star },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },

@@ -89,7 +89,7 @@ export function FrPmDashboard() {
       <header className="px-6 h-14 border-b border-border flex items-center justify-between sticky top-0 z-10 bg-bg/90 backdrop-blur">
         <div className="flex items-center gap-2">
           <div>
-            <h1 className="text-lg font-semibold">FR Dashboard</h1>
+            <h1 className="text-lg font-semibold">Feature Requests</h1>
           </div>
         </div>
         <SyncButton scope={scope} onSynced={refresh} autoRefreshMs={3_600_000} />
