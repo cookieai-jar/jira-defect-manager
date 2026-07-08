@@ -17,11 +17,34 @@ import { cn, daysSince, formatDate } from "@/lib/utils";
 import { hasEpicParent } from "@/types/triage";
 import type { JiraIssue, Priority, SlaStatus, TicketAnalysis } from "@/types/triage";
 
-type SortKey = "rank" | "severity" | "temperature" | "updated" | "created" | "key";
+type SortKey =
+  | "rank"
+  | "severity"
+  | "temperature"
+  | "updated"
+  | "created"
+  | "key"
+  | "summary"
+  | "customer"
+  | "assignee"
+  | "recommendation"
+  | "sla"
+  | "priority";
 
 interface Row extends TicketAnalysis {
   issue: JiraIssue;
 }
+
+/** Ordering rank for SLA status — more urgent sorts first under "desc". */
+const SLA_RANK: Record<SlaStatus, number> = {
+  late: 4,
+  "at-risk": 3,
+  "on-track": 2,
+  "best-effort": 1,
+};
+
+/** Ordering rank for priority — higher priority sorts first under "desc". */
+const PRIORITY_RANK: Record<Priority, number> = { P0: 4, P1: 3, P2: 2, P3: 1 };
 
 const RECOMMENDATION_STYLES: Record<TicketAnalysis["recommendation"], string> = {
   close: "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted",
@@ -141,6 +164,26 @@ export function TriageTable({
         case "key":
           cmp = a.issueKey.localeCompare(b.issueKey);
           break;
+        case "summary":
+          cmp = a.issue.summary.localeCompare(b.issue.summary);
+          break;
+        case "customer":
+          cmp = (a.customer ?? "").localeCompare(b.customer ?? "");
+          break;
+        case "assignee":
+          cmp = (a.issue.assignee ?? "").localeCompare(b.issue.assignee ?? "");
+          break;
+        case "recommendation":
+          cmp = a.recommendation.localeCompare(b.recommendation);
+          break;
+        case "sla":
+          cmp = (b.slaStatus ? SLA_RANK[b.slaStatus] : 0) - (a.slaStatus ? SLA_RANK[a.slaStatus] : 0);
+          break;
+        case "priority":
+          cmp =
+            (b.currentPriority ? PRIORITY_RANK[b.currentPriority] : 0) -
+            (a.currentPriority ? PRIORITY_RANK[a.currentPriority] : 0);
+          break;
       }
       return sortDir === "asc" ? -cmp : cmp;
     });
@@ -246,20 +289,22 @@ export function TriageTable({
           <thead className="text-[11px] uppercase tracking-wide text-fg-subtle">
             <tr className="border-b border-border">
               <Th onClick={() => clickSort("key")} active={sortKey === "key"} dir={sortDir}>Key</Th>
-              <th className="px-3 py-2 text-left font-medium">Summary</th>
-              <th className="px-3 py-2 text-left font-medium">Customer</th>
-              {showAssignee && <th className="px-3 py-2 text-left font-medium">Assignee</th>}
+              <Th onClick={() => clickSort("summary")} active={sortKey === "summary"} dir={sortDir}>Summary</Th>
+              <Th onClick={() => clickSort("customer")} active={sortKey === "customer"} dir={sortDir}>Customer</Th>
+              {showAssignee && (
+                <Th onClick={() => clickSort("assignee")} active={sortKey === "assignee"} dir={sortDir}>Assignee</Th>
+              )}
               {showScores && (
                 <>
                   <Th onClick={() => clickSort("severity")} active={sortKey === "severity"} dir={sortDir}>Sev</Th>
                   <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
                 </>
               )}
-              <th className="px-3 py-2 text-left font-medium">Recommendation</th>
+              <Th onClick={() => clickSort("recommendation")} active={sortKey === "recommendation"} dir={sortDir}>Recommendation</Th>
               {showSla && (
                 <>
-                  <th className="px-3 py-2 text-left font-medium">SLA</th>
-                  <th className="px-3 py-2 text-left font-medium">Pri</th>
+                  <Th onClick={() => clickSort("sla")} active={sortKey === "sla"} dir={sortDir}>SLA</Th>
+                  <Th onClick={() => clickSort("priority")} active={sortKey === "priority"} dir={sortDir}>Pri</Th>
                 </>
               )}
               {showCreated && (
