@@ -338,8 +338,8 @@ export function DashboardView({ scope, title }: Props) {
                   enabledPriorities={filterApplies ? enabledPrioritySet : undefined}
                   flagMissingEpic={scope === "sec" || scope === "alerts"}
                   showCreated={scope === "sec"}
-                  showAssignee={scope === "alerts"}
-                  showScores={scope !== "alerts"}
+                  showAssignee
+                  showScores={false}
                   defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
                 />
               </section>
