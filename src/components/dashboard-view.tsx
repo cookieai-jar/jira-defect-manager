@@ -336,8 +336,9 @@ export function DashboardView({ scope, title }: Props) {
                   onSelect={setSelected}
                   showSla={scope === "eac"}
                   enabledPriorities={filterApplies ? enabledPrioritySet : undefined}
-                  flagMissingEpic={scope === "sec"}
+                  flagMissingEpic={scope === "sec" || scope === "alerts"}
                   showCreated={scope === "sec"}
+                  showAssignee={scope === "alerts"}
                   defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
                 />
               </section>

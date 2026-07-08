@@ -10,12 +10,14 @@ import {
   Clock,
   ArrowUpCircle,
   ArrowDownCircle,
+  Unlink,
 } from "lucide-react";
 import { Badge, TempBadge } from "@/components/ui/badge";
-import { cn, daysSince } from "@/lib/utils";
+import { cn, daysSince, formatDate } from "@/lib/utils";
+import { hasEpicParent } from "@/types/triage";
 import type { JiraIssue, Priority, SlaStatus, TicketAnalysis } from "@/types/triage";
 
-type SortKey = "rank" | "severity" | "temperature" | "updated" | "key";
+type SortKey = "rank" | "severity" | "temperature" | "updated" | "created" | "key";
 
 interface Row extends TicketAnalysis {
   issue: JiraIssue;
@@ -42,6 +44,10 @@ export function TriageTable({
   onSelect,
   showSla = false,
   enabledPriorities,
+  flagMissingEpic = false,
+  showCreated = false,
+  showAssignee = false,
+  defaultSort,
 }: {
   rows: Row[];
   onSelect: (key: string) => void;
@@ -52,9 +58,20 @@ export function TriageTable({
    * "all" if its priority leaves the set.
    */
   enabledPriorities?: Set<Priority>;
+  /**
+   * When true, tickets whose parent is not an Epic get an alert icon by their
+   * key — they need a manager to assign them to an epic.
+   */
+  flagMissingEpic?: boolean;
+  /** When true, render a sortable "Created" column. */
+  showCreated?: boolean;
+  /** When true, render an "Assignee" column. */
+  showAssignee?: boolean;
+  /** Initial sort. Defaults to rank, descending. */
+  defaultSort?: { key: SortKey; dir: "asc" | "desc" };
 }) {
-  const [sortKey, setSortKey] = useState<SortKey>("rank");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortKey, setSortKey] = useState<SortKey>(defaultSort?.key ?? "rank");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(defaultSort?.dir ?? "desc");
   const [filter, setFilter] = useState<
     "all" | "p0" | "close" | "ping" | "escalate" | "late"
   >("all");
@@ -112,6 +129,11 @@ export function TriageTable({
           break;
         case "updated":
           cmp = daysSince(a.issue.updated) - daysSince(b.issue.updated);
+          break;
+        case "created":
+          // Newer (more recent created date) sorts first under "desc".
+          cmp =
+            new Date(b.issue.created).getTime() - new Date(a.issue.created).getTime();
           break;
         case "key":
           cmp = a.issueKey.localeCompare(b.issueKey);
@@ -223,6 +245,7 @@ export function TriageTable({
               <Th onClick={() => clickSort("key")} active={sortKey === "key"} dir={sortDir}>Key</Th>
               <th className="px-3 py-2 text-left font-medium">Summary</th>
               <th className="px-3 py-2 text-left font-medium">Customer</th>
+              {showAssignee && <th className="px-3 py-2 text-left font-medium">Assignee</th>}
               <Th onClick={() => clickSort("severity")} active={sortKey === "severity"} dir={sortDir}>Sev</Th>
               <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
               <th className="px-3 py-2 text-left font-medium">Recommendation</th>
@@ -231,6 +254,9 @@ export function TriageTable({
                   <th className="px-3 py-2 text-left font-medium">SLA</th>
                   <th className="px-3 py-2 text-left font-medium">Pri</th>
                 </>
+              )}
+              {showCreated && (
+                <Th onClick={() => clickSort("created")} active={sortKey === "created"} dir={sortDir}>Created</Th>
               )}
               <Th onClick={() => clickSort("updated")} active={sortKey === "updated"} dir={sortDir}>Updated</Th>
             </tr>
@@ -245,9 +271,23 @@ export function TriageTable({
                 <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">
                   <span className="text-accent">{r.issueKey}</span>
                   {r.isP0Customer && <span className="ml-1 text-warning">★</span>}
+                  {flagMissingEpic && r.issue.parent !== undefined && !hasEpicParent(r.issue) && (
+                    <span
+                      className="ml-1 inline-flex align-text-bottom text-danger"
+                      title="No epic parent — needs to be assigned to an epic"
+                      aria-label="No epic parent — needs to be assigned to an epic"
+                    >
+                      <Unlink className="h-3.5 w-3.5" />
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 max-w-[420px] truncate">{r.issue.summary}</td>
                 <td className="px-3 py-2 text-fg-muted whitespace-nowrap">{r.customer ?? "—"}</td>
+                {showAssignee && (
+                  <td className="px-3 py-2 text-fg-muted whitespace-nowrap max-w-[160px] truncate">
+                    {r.issue.assignee ?? "—"}
+                  </td>
+                )}
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span
                     className={cn(
@@ -286,6 +326,11 @@ export function TriageTable({
                     </td>
                   </>
                 )}
+                {showCreated && (
+                  <td className="px-3 py-2 text-xs text-fg-muted whitespace-nowrap">
+                    {formatDate(r.issue.created)}
+                  </td>
+                )}
                 <td className="px-3 py-2 text-xs text-fg-muted whitespace-nowrap">
                   {daysSince(r.issue.updated)}d ago
                 </td>
@@ -293,7 +338,7 @@ export function TriageTable({
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={showSla ? 9 : 7} className="px-3 py-8 text-center text-fg-muted text-sm">
+                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0)} className="px-3 py-8 text-center text-fg-muted text-sm">
                   No tickets match the current filter.
                 </td>
               </tr>
