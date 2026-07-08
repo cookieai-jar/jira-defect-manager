@@ -331,7 +331,9 @@ export function DashboardView({ scope, title }: Props) {
                 </section>
               )}
 
-              {scope === "alldefects" && <DefectGadgets rows={filteredRows} />}
+              {scope === "alldefects" && (
+                <DefectGadgets rows={filteredRows} jiraBaseUrl={jiraBaseUrl} />
+              )}
 
               <section>
                 <TriageTable

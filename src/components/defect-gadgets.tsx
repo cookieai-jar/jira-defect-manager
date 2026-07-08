@@ -24,57 +24,48 @@ const PRIORITY_BAR: Record<Priority | "Unset", string> = {
   Unset: "bg-fg-subtle",
 };
 
-/** All Defects analytics gadgets. Read-only distributions over the open ticket set. */
-export function DefectGadgets({ rows }: { rows: Row[] }) {
+/** All Defects analytics gadgets. Every count deep-links to the ticket set in JIRA. */
+export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl: string }) {
   const issues = useMemo(() => rows.map((r) => r.issue), [rows]);
 
   const priorityDist = useMemo(() => {
     const order: (Priority | "Unset")[] = ["P0", "P1", "P2", "P3", "Unset"];
-    const counts = new Map<string, number>();
-    for (const i of issues) {
-      const p = priorityFromString(i.priority) ?? "Unset";
-      counts.set(p, (counts.get(p) ?? 0) + 1);
-    }
+    const g = groupKeys(issues, (i) => priorityFromString(i.priority) ?? "Unset");
     return order
-      .map((p) => ({ label: p, count: counts.get(p) ?? 0, barClass: PRIORITY_BAR[p] }))
-      .filter((d) => d.count > 0);
+      .map((p) => ({ label: p, issueKeys: g.get(p) ?? [], barClass: PRIORITY_BAR[p] }))
+      .filter((d) => d.issueKeys.length > 0);
   }, [issues]);
 
-  const assigneeDist = useMemo(() => topN(countBy(issues, (i) => i.assignee ?? "Unassigned"), 8), [
-    issues,
-  ]);
+  const assigneeDist = useMemo(
+    () => topN(groupKeys(issues, (i) => i.assignee ?? "Unassigned"), 8),
+    [issues],
+  );
 
   const statusDist = useMemo(
-    () => sortedEntries(countBy(issues, (i) => i.status)),
+    () => sortedGroups(groupKeys(issues, (i) => i.status)),
     [issues],
   );
 
   const customerDist = useMemo(() => {
-    let withC = 0;
-    for (const i of issues) if (i.customers.length > 0) withC++;
+    const withC = issues.filter((i) => i.customers.length > 0).map((i) => i.key);
+    const without = issues.filter((i) => i.customers.length === 0).map((i) => i.key);
     return [
-      { label: "Customer-linked", count: withC, barClass: "bg-accent" },
-      { label: "No customer", count: issues.length - withC, barClass: "bg-fg-subtle" },
-    ].filter((d) => d.count > 0);
+      { label: "Customer-linked", issueKeys: withC, barClass: "bg-accent" },
+      { label: "No customer", issueKeys: without, barClass: "bg-fg-subtle" },
+    ].filter((d) => d.issueKeys.length > 0);
   }, [issues]);
 
   const pastSla = useMemo(() => {
-    const byPriority = new Map<string, number>();
-    let total = 0;
-    for (const i of issues) {
-      if (i.resolved) continue;
-      const p = priorityFromString(i.priority);
-      if (computeSlaStatus(p, i.created) !== "late") continue;
-      total++;
-      const k = p ?? "Unset";
-      byPriority.set(k, (byPriority.get(k) ?? 0) + 1);
-    }
+    const late = issues.filter(
+      (i) => !i.resolved && computeSlaStatus(priorityFromString(i.priority), i.created) === "late",
+    );
+    const g = groupKeys(late, (i) => priorityFromString(i.priority) ?? "Unset");
     const order: (Priority | "Unset")[] = ["P0", "P1", "P2", "P3", "Unset"];
     return {
-      total,
+      allKeys: late.map((i) => i.key),
       breakdown: order
-        .map((p) => ({ label: p, count: byPriority.get(p) ?? 0, barClass: PRIORITY_BAR[p] }))
-        .filter((d) => d.count > 0),
+        .map((p) => ({ label: p, issueKeys: g.get(p) ?? [], barClass: PRIORITY_BAR[p] }))
+        .filter((d) => d.issueKeys.length > 0),
     };
   }, [issues]);
 
@@ -84,22 +75,19 @@ export function DefectGadgets({ rows }: { rows: Row[] }) {
     <section className="space-y-3">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <GadgetCard title="Priority distribution" icon={<Flag className="h-4 w-4" />}>
-          <BarList data={priorityDist} total={total} />
+          <BarList data={priorityDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
         <GadgetCard title="Status distribution" icon={<ListChecks className="h-4 w-4" />}>
-          <BarList data={statusDist} total={total} />
+          <BarList data={statusDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
         <GadgetCard title="Assignee distribution" icon={<UserRound className="h-4 w-4" />}>
-          <BarList data={assigneeDist} total={total} />
+          <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
-        <GadgetCard
-          title="Customer vs non-customer"
-          icon={<Users className="h-4 w-4" />}
-        >
-          <BarList data={customerDist} total={total} />
+        <GadgetCard title="Customer vs non-customer" icon={<Users className="h-4 w-4" />}>
+          <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
         <GadgetCard
@@ -108,17 +96,26 @@ export function DefectGadgets({ rows }: { rows: Row[] }) {
           subtitle="Open tickets past the fix window for their priority (from creation date)"
         >
           <div className="flex items-baseline gap-2 mb-3">
-            <span className={cn("text-3xl font-semibold", pastSla.total > 0 ? "text-danger" : "text-fg")}>
-              {pastSla.total}
-            </span>
+            <CountLink
+              keys={pastSla.allKeys}
+              jiraBaseUrl={jiraBaseUrl}
+              className={cn(
+                "text-3xl font-semibold",
+                pastSla.allKeys.length > 0 ? "text-danger" : "text-fg",
+              )}
+            >
+              {pastSla.allKeys.length}
+            </CountLink>
             <span className="text-xs text-fg-muted">
-              of {total} open ({pct(pastSla.total, total)}%)
+              of {total} open ({pct(pastSla.allKeys.length, total)}%)
             </span>
           </div>
-          {pastSla.breakdown.length > 0 && <BarList data={pastSla.breakdown} total={pastSla.total} />}
+          {pastSla.breakdown.length > 0 && (
+            <BarList data={pastSla.breakdown} total={pastSla.allKeys.length} jiraBaseUrl={jiraBaseUrl} />
+          )}
         </GadgetCard>
 
-        <CategorizationGadget issues={issues} />
+        <CategorizationGadget issues={issues} jiraBaseUrl={jiraBaseUrl} />
       </div>
     </section>
   );
@@ -126,7 +123,13 @@ export function DefectGadgets({ rows }: { rows: Row[] }) {
 
 /* ---------- Categorization gadget (LLM-backed) ---------- */
 
-function CategorizationGadget({ issues }: { issues: JiraIssue[] }) {
+function CategorizationGadget({
+  issues,
+  jiraBaseUrl,
+}: {
+  issues: JiraIssue[];
+  jiraBaseUrl: string;
+}) {
   const [cat, setCat] = useState<DefectCategorization | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -201,8 +204,13 @@ function CategorizationGadget({ issues }: { issues: JiraIssue[] }) {
             </p>
           )}
           <BarList
-            data={cat.categories.map((c) => ({ label: c.name, count: c.count, barClass: "bg-accent" }))}
+            data={cat.categories.map((c) => ({
+              label: c.name,
+              issueKeys: c.issueKeys,
+              barClass: "bg-accent",
+            }))}
             total={cat.total}
+            jiraBaseUrl={jiraBaseUrl}
           />
           <p className="text-[11px] text-fg-subtle mt-2">
             {cat.total} tickets · analyzed {formatWhen(cat.categorizedAt)}
@@ -246,60 +254,114 @@ function GadgetCard({
 
 interface BarDatum {
   label: string;
-  count: number;
+  issueKeys: string[];
   barClass?: string;
 }
 
-function BarList({ data, total }: { data: BarDatum[]; total: number }) {
+function BarList({
+  data,
+  total,
+  jiraBaseUrl,
+}: {
+  data: BarDatum[];
+  total: number;
+  jiraBaseUrl: string;
+}) {
   if (data.length === 0) {
     return <p className="text-sm text-fg-muted">No data.</p>;
   }
-  const max = Math.max(...data.map((d) => d.count), 1);
+  const max = Math.max(...data.map((d) => d.issueKeys.length), 1);
   return (
     <ul className="space-y-1.5">
-      {data.map((d) => (
-        <li key={d.label} className="flex items-center gap-2 text-xs">
-          <span className="w-32 shrink-0 truncate text-fg-muted" title={d.label}>
-            {d.label}
-          </span>
-          <span className="flex-1 h-4 rounded bg-bg-muted overflow-hidden">
-            <span
-              className={cn("block h-full rounded", d.barClass ?? "bg-accent")}
-              style={{ width: `${Math.max((d.count / max) * 100, 2)}%` }}
-            />
-          </span>
-          <span className="w-16 shrink-0 text-right font-mono text-fg">
-            {d.count}
-            <span className="text-fg-subtle"> · {pct(d.count, total)}%</span>
-          </span>
-        </li>
-      ))}
+      {data.map((d) => {
+        const count = d.issueKeys.length;
+        return (
+          <li key={d.label} className="flex items-center gap-2 text-xs">
+            <span className="w-32 shrink-0 truncate text-fg-muted" title={d.label}>
+              {d.label}
+            </span>
+            <span className="flex-1 h-4 rounded bg-bg-muted overflow-hidden">
+              <span
+                className={cn("block h-full rounded", d.barClass ?? "bg-accent")}
+                style={{ width: `${Math.max((count / max) * 100, 2)}%` }}
+              />
+            </span>
+            <span className="w-16 shrink-0 text-right font-mono">
+              <CountLink keys={d.issueKeys} jiraBaseUrl={jiraBaseUrl} className="text-fg">
+                {count}
+              </CountLink>
+              <span className="text-fg-subtle"> · {pct(count, total)}%</span>
+            </span>
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+/**
+ * Render a count that links to the exact ticket set in JIRA. Falls back to
+ * plain text when there are no keys or the JIRA base URL is unknown.
+ */
+function CountLink({
+  keys,
+  jiraBaseUrl,
+  className,
+  children,
+}: {
+  keys: string[];
+  jiraBaseUrl: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  if (!jiraBaseUrl || keys.length === 0) {
+    return <span className={className}>{children}</span>;
+  }
+  const jql = `key in (${keys.join(",")}) ORDER BY priority DESC, created ASC`;
+  const href = `${jiraBaseUrl}/issues/?jql=${encodeURIComponent(jql)}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={cn("underline decoration-fg-subtle/40 hover:decoration-accent hover:text-accent", className)}
+      title={`Open these ${keys.length} ticket${keys.length === 1 ? "" : "s"} in JIRA`}
+    >
+      {children}
+    </a>
   );
 }
 
 /* ---------- pure helpers ---------- */
 
-function countBy<T>(items: T[], key: (t: T) => string): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const it of items) {
-    const k = key(it);
-    m.set(k, (m.get(k) ?? 0) + 1);
+/** Group issue keys by a derived label. */
+function groupKeys(issues: JiraIssue[], label: (i: JiraIssue) => string): Map<string, string[]> {
+  const m = new Map<string, string[]>();
+  for (const i of issues) {
+    const k = label(i);
+    const arr = m.get(k);
+    if (arr) arr.push(i.key);
+    else m.set(k, [i.key]);
   }
   return m;
 }
 
-function sortedEntries(m: Map<string, number>): BarDatum[] {
-  return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count }));
+function sortedGroups(m: Map<string, string[]>): BarDatum[] {
+  return [...m.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([label, issueKeys]) => ({ label, issueKeys }));
 }
 
-/** Top N by count, folding the remainder into an "Others" row. */
-function topN(m: Map<string, number>, n: number): BarDatum[] {
-  const sorted = [...m.entries()].sort((a, b) => b[1] - a[1]);
-  const head = sorted.slice(0, n).map(([label, count]) => ({ label, count }));
+/** Top N groups by size, folding the remainder into an "Others" row. */
+function topN(m: Map<string, string[]>, n: number): BarDatum[] {
+  const sorted = [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+  const head: BarDatum[] = sorted.slice(0, n).map(([label, issueKeys]) => ({ label, issueKeys }));
   const rest = sorted.slice(n);
   if (rest.length > 0) {
-    head.push({ label: `Others (${rest.length})`, count: rest.reduce((s, [, c]) => s + c, 0) });
+    head.push({
+      label: `Others (${rest.length})`,
+      issueKeys: rest.flatMap(([, keys]) => keys),
+    });
   }
   return head;
 }
