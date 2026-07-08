@@ -6,10 +6,11 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Check, CircleAlert, Loader2, Save } from "lucide-react";
-import type { AppConfig } from "@/types/triage";
+import type { AppConfig, Scope } from "@/types/triage";
 import { SCOPES, SCOPE_LABELS } from "@/types/triage";
 import { Toggle } from "@/components/ui/toggle";
 import { WhiteGloveCustomers } from "@/components/white-glove-customers";
+import { cn } from "@/lib/utils";
 
 interface Health {
   jira: { ok: true; user: string } | { ok: false; error: string };
@@ -17,11 +18,41 @@ interface Health {
   env: { jiraBaseUrl: string | null; jiraEmail: string | null; model: string };
 }
 
+type Tab = "connection" | "dashboards" | "scopes" | "whiteglove" | "analysis";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "connection", label: "Connection" },
+  { id: "dashboards", label: "Dashboards" },
+  { id: "scopes", label: "Triage scopes" },
+  { id: "whiteglove", label: "White-glove" },
+  { id: "analysis", label: "Analysis" },
+];
+
+/** "si" is the Integrations Hardening scope, which isn't a triage Scope. */
+type ScopeTab = Scope | "si";
+
+function scopeDescription(s: Scope): string {
+  switch (s) {
+    case "eac":
+      return "Customer support / bug triage view.";
+    case "fr":
+      return "Feature request triage view.";
+    case "sec":
+      return "Security vulnerability and PII triage view.";
+    case "alerts":
+      return "On-call alert triage view (integrations:on-call-triage).";
+    case "incidents":
+      return "Incident action-item triage view (integrations).";
+  }
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [tab, setTab] = useState<Tab>("connection");
+  const [scopeTab, setScopeTab] = useState<ScopeTab>("eac");
 
   useEffect(() => {
     fetch("/api/config")
@@ -76,177 +107,200 @@ export default function SettingsPage() {
           {saving ? "Saving…" : saved ? "Saved" : "Save"}
         </Button>
       </header>
+
+      <nav className="px-6 border-b border-border flex gap-1 overflow-x-auto scroll-thin">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              "px-3 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors",
+              tab === t.id
+                ? "border-accent text-fg font-medium"
+                : "border-transparent text-fg-muted hover:text-fg",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
       <div className="p-6 max-w-3xl space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Connection</CardTitle>
-            <span className="text-[11px] text-fg-subtle">From .env.local</span>
-          </CardHeader>
-          <CardBody className="space-y-3 text-sm">
-            <Row label="JIRA base URL" value={health?.env.jiraBaseUrl ?? "—"} />
-            <Row label="JIRA user" value={health?.env.jiraEmail ?? "—"} />
-            <Row label="Anthropic model (env)" value={health?.env.model ?? "—"} />
-            <div className="flex gap-2 pt-2">
-              <StatusPill
-                label="JIRA"
-                ok={health?.jira.ok ?? false}
-                detail={
-                  health?.jira.ok
-                    ? `as ${health.jira.user}`
-                    : health?.jira && !health.jira.ok
-                      ? health.jira.error
-                      : "checking…"
-                }
-              />
-              <StatusPill
-                label="Anthropic"
-                ok={health?.anthropic.ok ?? false}
-                detail={
-                  health?.anthropic.ok
-                    ? "key present"
-                    : health?.anthropic && !health.anthropic.ok
-                      ? health.anthropic.error
-                      : "checking…"
-                }
-              />
-            </div>
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Dashboard visibility</CardTitle>
-            <span className="text-[11px] text-fg-subtle">
-              Hide dashboards from the sidebar without deleting their data
-            </span>
-          </CardHeader>
-          <CardBody className="divide-y divide-border">
-            {SCOPES.map((s) => (
-              <Toggle
-                key={s}
-                checked={config.dashboards[s]}
-                onChange={(next) =>
-                  setConfig({
-                    ...config,
-                    dashboards: { ...config.dashboards, [s]: next },
-                  })
-                }
-                label={`Show ${SCOPE_LABELS[s]} Dashboard`}
-                description={
-                  s === "eac"
-                    ? "Customer support / bug triage view."
-                    : s === "fr"
-                      ? "Feature request triage view."
-                      : s === "sec"
-                        ? "Security vulnerability and PII triage view."
-                        : s === "alerts"
-                          ? "On-call alert triage view (integrations:on-call-triage)."
-                          : "Incident action-item triage view (integrations)."
-                }
-              />
-            ))}
-            <Toggle
-              checked={config.siDashboard}
-              onChange={(next) => setConfig({ ...config, siDashboard: next })}
-              label="Show Integrations Hardening"
-              description="Cross-ticket pattern analysis of integration defects: issue categories, root causes, and developer/QE hardening steps."
-            />
-          </CardBody>
-        </Card>
-
-        <WhiteGloveCustomers />
-
-        {SCOPES.map((s) => (
-          <Card key={s}>
+        {tab === "connection" && (
+          <Card>
             <CardHeader>
-              <CardTitle>{SCOPE_LABELS[s]} triage scope</CardTitle>
-              <span className="text-[11px] text-fg-subtle">
-                Defines the universe of {SCOPE_LABELS[s]} tickets to triage
-              </span>
+              <CardTitle>Connection</CardTitle>
+              <span className="text-[11px] text-fg-subtle">From .env.local</span>
             </CardHeader>
-            <CardBody className="space-y-3">
-              <div className="space-y-1.5">
-                <Label>{SCOPE_LABELS[s]} master JQL</Label>
-                <Textarea
-                  value={config.jqls[s]}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      jqls: { ...config.jqls, [s]: e.target.value },
-                    })
+            <CardBody className="space-y-3 text-sm">
+              <Row label="JIRA base URL" value={health?.env.jiraBaseUrl ?? "—"} />
+              <Row label="JIRA user" value={health?.env.jiraEmail ?? "—"} />
+              <Row label="Anthropic model (env)" value={health?.env.model ?? "—"} />
+              <div className="flex gap-2 pt-2">
+                <StatusPill
+                  label="JIRA"
+                  ok={health?.jira.ok ?? false}
+                  detail={
+                    health?.jira.ok
+                      ? `as ${health.jira.user}`
+                      : health?.jira && !health.jira.ok
+                        ? health.jira.error
+                        : "checking…"
                   }
-                  placeholder={`project = ${SCOPE_LABELS[s]} AND statusCategory != Done ORDER BY updated DESC`}
                 />
-                <p className="text-[11px] text-fg-subtle">
-                  {SCOPE_LABELS[s]} white-glove customer JQL fragments will be AND&apos;d against this filter.
-                </p>
+                <StatusPill
+                  label="Anthropic"
+                  ok={health?.anthropic.ok ?? false}
+                  detail={
+                    health?.anthropic.ok
+                      ? "key present"
+                      : health?.anthropic && !health.anthropic.ok
+                        ? health.anthropic.error
+                        : "checking…"
+                  }
+                />
               </div>
             </CardBody>
           </Card>
-        ))}
+        )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Integrations Hardening scope</CardTitle>
-            <span className="text-[11px] text-fg-subtle">
-              Tickets pulled for the deep pattern analysis
-            </span>
-          </CardHeader>
-          <CardBody className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Integrations Hardening JQL</Label>
-              <Textarea
-                value={config.siJql}
-                onChange={(e) => setConfig({ ...config, siJql: e.target.value })}
-                placeholder="project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC"
+        {tab === "dashboards" && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Dashboard visibility</CardTitle>
+              <span className="text-[11px] text-fg-subtle">
+                Hide dashboards from the sidebar without deleting their data
+              </span>
+            </CardHeader>
+            <CardBody className="divide-y divide-border">
+              {SCOPES.map((s) => (
+                <Toggle
+                  key={s}
+                  checked={config.dashboards[s]}
+                  onChange={(next) =>
+                    setConfig({
+                      ...config,
+                      dashboards: { ...config.dashboards, [s]: next },
+                    })
+                  }
+                  label={`Show ${SCOPE_LABELS[s]} Dashboard`}
+                  description={scopeDescription(s)}
+                />
+              ))}
+              <Toggle
+                checked={config.siDashboard}
+                onChange={(next) => setConfig({ ...config, siDashboard: next })}
+                label="Show Integrations Hardening"
+                description="Cross-ticket pattern analysis of integration defects: issue categories, root causes, and developer/QE hardening steps."
               />
-              <p className="text-[11px] text-fg-subtle">
-                Every ticket matched here is run through the deep analysis to surface recurring issue
-                categories, root causes, and developer/QE hardening steps.
-              </p>
-            </div>
-          </CardBody>
-        </Card>
+            </CardBody>
+          </Card>
+        )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Analysis settings</CardTitle>
-            <span className="text-[11px] text-fg-subtle">Shared across all scopes</span>
-          </CardHeader>
-          <CardBody className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <Field
-                label="Sprint length (days)"
-                value={config.sprintLengthDays}
-                onChange={(n) => setConfig({ ...config, sprintLengthDays: n })}
-              />
-              <Field
-                label="Inactivity → close (days)"
-                value={config.inactivityThresholdDays}
-                onChange={(n) => setConfig({ ...config, inactivityThresholdDays: n })}
-              />
-              <Field
-                label="Ping threshold (days)"
-                value={config.pingThresholdDays}
-                onChange={(n) => setConfig({ ...config, pingThresholdDays: n })}
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Anthropic model</Label>
-                <Input
-                  value={config.model}
-                  onChange={(e) => setConfig({ ...config, model: e.target.value })}
+        {tab === "scopes" && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Triage scopes</CardTitle>
+              <span className="text-[11px] text-fg-subtle">
+                The JQL defining the universe of tickets for each dashboard
+              </span>
+            </CardHeader>
+            <CardBody className="space-y-3">
+              <div className="flex flex-wrap gap-1.5">
+                {SCOPES.map((s) => (
+                  <ScopePill
+                    key={s}
+                    active={scopeTab === s}
+                    onClick={() => setScopeTab(s)}
+                    label={SCOPE_LABELS[s]}
+                  />
+                ))}
+                <ScopePill
+                  active={scopeTab === "si"}
+                  onClick={() => setScopeTab("si")}
+                  label="Integrations Hardening"
                 />
               </div>
-              <Field
-                label="Max issues per sync"
-                value={config.maxIssuesPerSync}
-                onChange={(n) => setConfig({ ...config, maxIssuesPerSync: n })}
-              />
-            </div>
-          </CardBody>
-        </Card>
+
+              {scopeTab === "si" ? (
+                <div className="space-y-1.5">
+                  <Label>Integrations Hardening JQL</Label>
+                  <Textarea
+                    value={config.siJql}
+                    onChange={(e) => setConfig({ ...config, siJql: e.target.value })}
+                    placeholder="project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC"
+                  />
+                  <p className="text-[11px] text-fg-subtle">
+                    Every ticket matched here is run through the deep analysis to surface recurring
+                    issue categories, root causes, and developer/QE hardening steps.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>{SCOPE_LABELS[scopeTab]} master JQL</Label>
+                  <Textarea
+                    value={config.jqls[scopeTab]}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        jqls: { ...config.jqls, [scopeTab]: e.target.value },
+                      })
+                    }
+                    placeholder={`project = ${SCOPE_LABELS[scopeTab]} AND statusCategory != Done ORDER BY updated DESC`}
+                  />
+                  <p className="text-[11px] text-fg-subtle">
+                    {SCOPE_LABELS[scopeTab]} white-glove customer JQL fragments will be AND&apos;d
+                    against this filter.
+                  </p>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+        )}
+
+        {tab === "whiteglove" && <WhiteGloveCustomers />}
+
+        {tab === "analysis" && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Analysis settings</CardTitle>
+              <span className="text-[11px] text-fg-subtle">Shared across all scopes</span>
+            </CardHeader>
+            <CardBody className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <Field
+                  label="Sprint length (days)"
+                  value={config.sprintLengthDays}
+                  onChange={(n) => setConfig({ ...config, sprintLengthDays: n })}
+                />
+                <Field
+                  label="Inactivity → close (days)"
+                  value={config.inactivityThresholdDays}
+                  onChange={(n) => setConfig({ ...config, inactivityThresholdDays: n })}
+                />
+                <Field
+                  label="Ping threshold (days)"
+                  value={config.pingThresholdDays}
+                  onChange={(n) => setConfig({ ...config, pingThresholdDays: n })}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Anthropic model</Label>
+                  <Input
+                    value={config.model}
+                    onChange={(e) => setConfig({ ...config, model: e.target.value })}
+                  />
+                </div>
+                <Field
+                  label="Max issues per sync"
+                  value={config.maxIssuesPerSync}
+                  onChange={(n) => setConfig({ ...config, maxIssuesPerSync: n })}
+                />
+              </div>
+            </CardBody>
+          </Card>
+        )}
       </div>
     </div>
   );
@@ -258,6 +312,30 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-fg-muted">{label}</span>
       <span className="font-mono text-xs text-fg truncate max-w-[60%]">{value}</span>
     </div>
+  );
+}
+
+function ScopePill({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "px-2.5 py-1 rounded text-xs border transition-colors",
+        active
+          ? "border-accent bg-accent/10 text-fg"
+          : "border-border text-fg-muted hover:text-fg hover:border-border-strong",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
