@@ -47,6 +47,7 @@ export function TriageTable({
   flagMissingEpic = false,
   showCreated = false,
   showAssignee = false,
+  showScores = true,
   defaultSort,
 }: {
   rows: Row[];
@@ -67,6 +68,8 @@ export function TriageTable({
   showCreated?: boolean;
   /** When true, render an "Assignee" column. */
   showAssignee?: boolean;
+  /** When true, render the Sev and Temp score columns. */
+  showScores?: boolean;
   /** Initial sort. Defaults to rank, descending. */
   defaultSort?: { key: SortKey; dir: "asc" | "desc" };
 }) {
@@ -246,8 +249,12 @@ export function TriageTable({
               <th className="px-3 py-2 text-left font-medium">Summary</th>
               <th className="px-3 py-2 text-left font-medium">Customer</th>
               {showAssignee && <th className="px-3 py-2 text-left font-medium">Assignee</th>}
-              <Th onClick={() => clickSort("severity")} active={sortKey === "severity"} dir={sortDir}>Sev</Th>
-              <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
+              {showScores && (
+                <>
+                  <Th onClick={() => clickSort("severity")} active={sortKey === "severity"} dir={sortDir}>Sev</Th>
+                  <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
+                </>
+              )}
               <th className="px-3 py-2 text-left font-medium">Recommendation</th>
               {showSla && (
                 <>
@@ -288,23 +295,27 @@ export function TriageTable({
                     {r.issue.assignee ?? "—"}
                   </td>
                 )}
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <span
-                    className={cn(
-                      "font-mono text-xs",
-                      r.severityScore >= 8
-                        ? "text-danger"
-                        : r.severityScore >= 6
-                          ? "text-warning"
-                          : "text-fg-muted",
-                    )}
-                  >
-                    {r.severityScore}/10
-                  </span>
-                </td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <TempBadge band={r.temperature} score={r.temperatureScore} />
-                </td>
+                {showScores && (
+                  <>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span
+                        className={cn(
+                          "font-mono text-xs",
+                          r.severityScore >= 8
+                            ? "text-danger"
+                            : r.severityScore >= 6
+                              ? "text-warning"
+                              : "text-fg-muted",
+                        )}
+                      >
+                        {r.severityScore}/10
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <TempBadge band={r.temperature} score={r.temperatureScore} />
+                    </td>
+                  </>
+                )}
                 <td className="px-3 py-2 whitespace-nowrap">
                   <Badge className={cn("border", RECOMMENDATION_STYLES[r.recommendation])}>
                     {r.recommendation}
@@ -338,7 +349,7 @@ export function TriageTable({
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0)} className="px-3 py-8 text-center text-fg-muted text-sm">
+                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0) - (showScores ? 0 : 2)} className="px-3 py-8 text-center text-fg-muted text-sm">
                   No tickets match the current filter.
                 </td>
               </tr>

@@ -339,6 +339,7 @@ export function DashboardView({ scope, title }: Props) {
                   flagMissingEpic={scope === "sec" || scope === "alerts"}
                   showCreated={scope === "sec"}
                   showAssignee={scope === "alerts"}
+                  showScores={scope !== "alerts"}
                   defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
                 />
               </section>
