@@ -364,7 +364,8 @@ export function DashboardView({ scope, title }: Props) {
                     scope === "sec" ||
                     scope === "alerts" ||
                     scope === "incidents" ||
-                    scope === "alldefects"
+                    scope === "alldefects" ||
+                    scope === "ops"
                   }
                   showCreated={scope === "sec"}
                   showAssignee

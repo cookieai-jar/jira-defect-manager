@@ -45,6 +45,8 @@ function scopeDescription(s: Scope): string {
       return "Incident action-item triage view (integrations).";
     case "alldefects":
       return "All open Integrations bug defects (EAC).";
+    case "ops":
+      return "OPS project tickets assigned to the on-call owner.";
   }
 }
 

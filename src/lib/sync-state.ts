@@ -41,6 +41,7 @@ const states: Record<Scope, SyncState> = {
   alerts: initial(),
   incidents: initial(),
   alldefects: initial(),
+  ops: initial(),
 };
 
 export function getSyncState(scope: Scope): SyncState {

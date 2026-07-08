@@ -12,6 +12,7 @@ import {
   Siren,
   Flame,
   Bug,
+  Wrench,
   BookOpen,
   Boxes,
   HeartPulse,
@@ -31,6 +32,7 @@ interface NavItem {
 
 const ALL_ITEMS: NavItem[] = [
   { href: "/all-defects", label: "All Defects", icon: Bug, scope: "alldefects" },
+  { href: "/ops", label: "OPS", icon: Wrench, scope: "ops" },
   { href: "/", label: "Customer Defects", icon: LayoutDashboard, scope: "eac" },
   { href: "/fr/poc", label: "Feature Requests", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Vulnerabilities", icon: ShieldAlert, scope: "sec" },
