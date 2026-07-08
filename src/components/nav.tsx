@@ -30,12 +30,12 @@ interface NavItem {
 }
 
 const ALL_ITEMS: NavItem[] = [
+  { href: "/all-defects", label: "All Defects", icon: Bug, scope: "alldefects" },
   { href: "/", label: "Customer Defects", icon: LayoutDashboard, scope: "eac" },
   { href: "/fr/poc", label: "Feature Requests", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Vulnerabilities", icon: ShieldAlert, scope: "sec" },
   { href: "/alerts", label: "Alerts", icon: Siren, scope: "alerts" },
   { href: "/incidents", label: "Incidents", icon: Flame, scope: "incidents" },
-  { href: "/all-defects", label: "All Defects", icon: Bug, scope: "alldefects" },
   { href: "/integrations", label: "Integrations Hardening", icon: Boxes, flag: "siDashboard" },
   { href: "/tenants", label: "Tenant Health", icon: HeartPulse, flag: "tenantDashboard" },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
