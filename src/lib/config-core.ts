@@ -11,8 +11,10 @@ export const DEFAULTS: AppConfig = {
     fr: "project = FR AND statusCategory != Done ORDER BY updated DESC",
     sec: 'project = EAC AND (labels in (security, vulnerability, pii) OR "Issue Type" in ("Vulnerability", "Security")) AND statusCategory != Done ORDER BY priority DESC, updated DESC',
     alerts: 'labels = "integrations:on-call-triage" AND statusCategory != Done ORDER BY priority DESC, updated DESC',
+    incidents:
+      "labels = incident-action-item AND statusCategory NOT IN (Done) AND component in (integrations) ORDER BY priority DESC, created DESC",
   },
-  dashboards: { eac: true, fr: true, sec: true, alerts: true },
+  dashboards: { eac: true, fr: true, sec: true, alerts: true, incidents: true },
   siJql:
     "project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC",
   siDashboard: true,
@@ -56,12 +58,14 @@ export function parseConfig(raw: string | null): AppConfig {
     fr: parsed.jqls?.fr ?? DEFAULTS.jqls.fr,
     sec: parsed.jqls?.sec ?? DEFAULTS.jqls.sec,
     alerts: parsed.jqls?.alerts ?? DEFAULTS.jqls.alerts,
+    incidents: parsed.jqls?.incidents ?? DEFAULTS.jqls.incidents,
   };
   const dashboards: Record<Scope, boolean> = {
     eac: parsed.dashboards?.eac ?? true,
     fr: parsed.dashboards?.fr ?? true,
     sec: parsed.dashboards?.sec ?? true,
     alerts: parsed.dashboards?.alerts ?? true,
+    incidents: parsed.dashboards?.incidents ?? true,
   };
   return {
     ...DEFAULTS,
