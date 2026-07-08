@@ -9,6 +9,7 @@ import { TriageTable } from "@/components/triage-table";
 import { TicketDrawer } from "@/components/ticket-drawer";
 import { TrendChart } from "@/components/trend-chart";
 import { PriorityReview } from "@/components/priority-review";
+import { DefectGadgets } from "@/components/defect-gadgets";
 import {
   CheckCircle2,
   MessageSquare,
@@ -329,6 +330,8 @@ export function DashboardView({ scope, title }: Props) {
                   )}
                 </section>
               )}
+
+              {scope === "alldefects" && <DefectGadgets rows={filteredRows} />}
 
               <section>
                 <TriageTable

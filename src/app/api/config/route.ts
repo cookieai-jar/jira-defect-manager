@@ -1,22 +1,23 @@
 import { NextResponse } from "next/server";
-import { getConfig, saveConfig } from "@/lib/config";
+import { getConfig, saveConfig, type AppConfigPatch } from "@/lib/config";
+import { SCOPES, type Scope } from "@/types/triage";
 import { z } from "zod";
 
+// Build the per-scope shapes from SCOPES so adding a scope never leaves this
+// PUT schema behind — an omitted scope key is silently stripped on save, which
+// would make that scope's JQL / visibility edits in Settings a no-op.
+const jqlShape = Object.fromEntries(
+  SCOPES.map((s) => [s, z.string().min(1).optional()]),
+) as Record<Scope, z.ZodOptional<z.ZodString>>;
+const dashboardShape = Object.fromEntries(
+  SCOPES.map((s) => [s, z.boolean().optional()]),
+) as Record<Scope, z.ZodOptional<z.ZodBoolean>>;
+
 const PatchSchema = z.object({
-  jqls: z
-    .object({
-      eac: z.string().min(1).optional(),
-      fr: z.string().min(1).optional(),
-      sec: z.string().min(1).optional(),
-    })
-    .optional(),
-  dashboards: z
-    .object({
-      eac: z.boolean().optional(),
-      fr: z.boolean().optional(),
-      sec: z.boolean().optional(),
-    })
-    .optional(),
+  jqls: z.object(jqlShape).optional(),
+  dashboards: z.object(dashboardShape).optional(),
+  siJql: z.string().min(1).optional(),
+  siDashboard: z.boolean().optional(),
   sprintLengthDays: z.number().int().min(1).max(60).optional(),
   inactivityThresholdDays: z.number().int().min(1).max(365).optional(),
   pingThresholdDays: z.number().int().min(1).max(60).optional(),
@@ -34,6 +35,6 @@ export async function PUT(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const next = saveConfig(parsed.data);
+  const next = saveConfig(parsed.data as AppConfigPatch);
   return NextResponse.json(next);
 }
