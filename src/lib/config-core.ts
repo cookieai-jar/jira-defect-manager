@@ -13,8 +13,17 @@ export const DEFAULTS: AppConfig = {
     alerts: 'labels = "integrations:on-call-triage" AND statusCategory != Done ORDER BY priority DESC, updated DESC',
     incidents:
       "labels = incident-action-item AND statusCategory NOT IN (Done) AND component in (integrations) ORDER BY priority DESC, created DESC",
+    alldefects:
+      "project = EAC and component in (Integrations) and statusCategory != Done and issuetype = Bug and createdDate >= '2026-01-01 00:00' ORDER BY created ASC, priority DESC, updated DESC",
   },
-  dashboards: { eac: true, fr: true, sec: true, alerts: true, incidents: true },
+  dashboards: {
+    eac: true,
+    fr: true,
+    sec: true,
+    alerts: true,
+    incidents: true,
+    alldefects: true,
+  },
   siJql:
     "project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC",
   siDashboard: true,
@@ -59,6 +68,7 @@ export function parseConfig(raw: string | null): AppConfig {
     sec: parsed.jqls?.sec ?? DEFAULTS.jqls.sec,
     alerts: parsed.jqls?.alerts ?? DEFAULTS.jqls.alerts,
     incidents: parsed.jqls?.incidents ?? DEFAULTS.jqls.incidents,
+    alldefects: parsed.jqls?.alldefects ?? DEFAULTS.jqls.alldefects,
   };
   const dashboards: Record<Scope, boolean> = {
     eac: parsed.dashboards?.eac ?? true,
@@ -66,6 +76,7 @@ export function parseConfig(raw: string | null): AppConfig {
     sec: parsed.dashboards?.sec ?? true,
     alerts: parsed.dashboards?.alerts ?? true,
     incidents: parsed.dashboards?.incidents ?? true,
+    alldefects: parsed.dashboards?.alldefects ?? true,
   };
   return {
     ...DEFAULTS,

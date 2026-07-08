@@ -14,14 +14,28 @@ describe("autoSyncScopes", () => {
   it("returns all triage scopes when dashboards are enabled", () => {
     expect(
       autoSyncScopes({
-        dashboards: { eac: true, fr: true, sec: true, alerts: true, incidents: true },
+        dashboards: {
+          eac: true,
+          fr: true,
+          sec: true,
+          alerts: true,
+          incidents: true,
+          alldefects: true,
+        },
       }),
-    ).toEqual(["eac", "fr", "sec", "alerts", "incidents"]);
+    ).toEqual(["eac", "fr", "sec", "alerts", "incidents", "alldefects"]);
   });
   it("excludes scopes whose dashboard is disabled", () => {
     expect(
       autoSyncScopes({
-        dashboards: { eac: true, fr: false, sec: true, alerts: false, incidents: false },
+        dashboards: {
+          eac: true,
+          fr: false,
+          sec: true,
+          alerts: false,
+          incidents: false,
+          alldefects: false,
+        },
       }),
     ).toEqual(["eac", "sec"]);
   });
@@ -32,6 +46,7 @@ describe("autoSyncScopes", () => {
       "sec",
       "alerts",
       "incidents",
+      "alldefects",
     ]);
   });
 });

@@ -23,7 +23,7 @@ type Tab = "connection" | "dashboards" | "scopes" | "whiteglove" | "analysis";
 const TABS: { id: Tab; label: string }[] = [
   { id: "connection", label: "Connection" },
   { id: "dashboards", label: "Dashboards" },
-  { id: "scopes", label: "Triage scopes" },
+  { id: "scopes", label: "JQL" },
   { id: "whiteglove", label: "White-glove" },
   { id: "analysis", label: "Analysis" },
 ];
@@ -43,6 +43,8 @@ function scopeDescription(s: Scope): string {
       return "On-call alert triage view (integrations:on-call-triage).";
     case "incidents":
       return "Incident action-item triage view (integrations).";
+    case "alldefects":
+      return "All open Integrations bug defects (EAC).";
   }
 }
 
@@ -200,7 +202,7 @@ export default function SettingsPage() {
         {tab === "scopes" && (
           <Card>
             <CardHeader>
-              <CardTitle>Triage scopes</CardTitle>
+              <CardTitle>JQL</CardTitle>
               <span className="text-[11px] text-fg-subtle">
                 The JQL defining the universe of tickets for each dashboard
               </span>

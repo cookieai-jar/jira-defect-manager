@@ -18,9 +18,16 @@ export interface PriorityDecision {
   revisitReason: string | null;
 }
 
-export type Scope = "eac" | "fr" | "sec" | "alerts" | "incidents";
+export type Scope = "eac" | "fr" | "sec" | "alerts" | "incidents" | "alldefects";
 
-export const SCOPES: readonly Scope[] = ["eac", "fr", "sec", "alerts", "incidents"] as const;
+export const SCOPES: readonly Scope[] = [
+  "eac",
+  "fr",
+  "sec",
+  "alerts",
+  "incidents",
+  "alldefects",
+] as const;
 
 export const SCOPE_LABELS: Record<Scope, string> = {
   eac: "Customer",
@@ -28,6 +35,7 @@ export const SCOPE_LABELS: Record<Scope, string> = {
   sec: "Security",
   alerts: "Alerts",
   incidents: "Incidents",
+  alldefects: "All Defects",
 };
 
 /** Scopes that have a P0 customer correlation section on their dashboard. */
@@ -35,7 +43,12 @@ export const SCOPES_WITH_P0: readonly Scope[] = ["eac", "fr"] as const;
 
 export function isScope(s: string | null | undefined): s is Scope {
   return (
-    s === "eac" || s === "fr" || s === "sec" || s === "alerts" || s === "incidents"
+    s === "eac" ||
+    s === "fr" ||
+    s === "sec" ||
+    s === "alerts" ||
+    s === "incidents" ||
+    s === "alldefects"
   );
 }
 
