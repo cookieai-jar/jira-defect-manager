@@ -30,7 +30,7 @@ import type {
   TriageReport,
 } from "@/types/triage";
 import { SCOPE_LABELS, scopeHasP0 } from "@/types/triage";
-import { priorityFromString } from "@/lib/priority";
+import { computeSlaStatus, priorityFromString } from "@/lib/priority";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -209,6 +209,16 @@ export function DashboardView({ scope, title }: Props) {
   const anyPriorityEnabled =
     priorityActive.P0 || priorityActive.P1 || priorityActive.P2;
 
+  // Open P1 tickets past their SLA fix window (from creation date). Shown on the
+  // All Defects dashboard in place of the Escalations stat.
+  const pastSlaP1Count = useMemo(() => {
+    if (scope !== "alldefects") return 0;
+    return filteredRows.filter((r) => {
+      const p = priorityFromString(r.issue.priority);
+      return p === "P1" && !r.issue.resolved && computeSlaStatus(p, r.issue.created) === "late";
+    }).length;
+  }, [scope, filteredRows]);
+
   return (
     <div className="flex-1 overflow-auto scroll-thin">
       <header className="px-6 h-14 border-b border-border flex items-center justify-between sticky top-0 z-10 bg-bg/90 backdrop-blur">
@@ -247,12 +257,21 @@ export function DashboardView({ scope, title }: Props) {
                   label="Tickets analyzed"
                   value={filteredAnalyses.length}
                 />
-                <Stat
-                  icon={<AlertTriangle className="h-4 w-4 text-danger" />}
-                  label="Escalations"
-                  value={filteredAnalyses.filter((a) => a.recommendation === "escalate").length}
-                  tone="danger"
-                />
+                {scope === "alldefects" ? (
+                  <Stat
+                    icon={<Clock className="h-4 w-4 text-danger" />}
+                    label="P1 past SLA"
+                    value={pastSlaP1Count}
+                    tone="danger"
+                  />
+                ) : (
+                  <Stat
+                    icon={<AlertTriangle className="h-4 w-4 text-danger" />}
+                    label="Escalations"
+                    value={filteredAnalyses.filter((a) => a.recommendation === "escalate").length}
+                    tone="danger"
+                  />
+                )}
                 {scope === "eac" && (
                   <Stat
                     icon={<Clock className="h-4 w-4 text-danger" />}

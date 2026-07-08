@@ -82,14 +82,6 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           <BarList data={statusDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
-        <GadgetCard title="Assignee distribution" icon={<UserRound className="h-4 w-4" />}>
-          <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-        </GadgetCard>
-
-        <GadgetCard title="Customer vs non-customer" icon={<Users className="h-4 w-4" />}>
-          <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-        </GadgetCard>
-
         <GadgetCard
           title="Past SLA due date"
           icon={<Clock className="h-4 w-4 text-danger" />}
@@ -113,6 +105,14 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           {pastSla.breakdown.length > 0 && (
             <BarList data={pastSla.breakdown} total={pastSla.allKeys.length} jiraBaseUrl={jiraBaseUrl} />
           )}
+        </GadgetCard>
+
+        <GadgetCard title="Assignee distribution" icon={<UserRound className="h-4 w-4" />}>
+          <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
+        </GadgetCard>
+
+        <GadgetCard title="Customer vs non-customer" icon={<Users className="h-4 w-4" />}>
+          <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
         <CategorizationGadget issues={issues} jiraBaseUrl={jiraBaseUrl} />
