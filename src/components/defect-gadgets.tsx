@@ -46,13 +46,18 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
     [issues],
   );
 
+  // Defects per customer, descending. A ticket with multiple customers counts
+  // toward each (customfield_10044 is multi-select).
   const customerDist = useMemo(() => {
-    const withC = issues.filter((i) => i.customers.length > 0).map((i) => i.key);
-    const without = issues.filter((i) => i.customers.length === 0).map((i) => i.key);
-    return [
-      { label: "Customer-linked", issueKeys: withC, barClass: "bg-accent" },
-      { label: "No customer", issueKeys: without, barClass: "bg-fg-subtle" },
-    ].filter((d) => d.issueKeys.length > 0);
+    const m = new Map<string, string[]>();
+    for (const i of issues) {
+      for (const c of i.customers) {
+        const arr = m.get(c);
+        if (arr) arr.push(i.key);
+        else m.set(c, [i.key]);
+      }
+    }
+    return topN(m, 8);
   }, [issues]);
 
   const pastSla = useMemo(() => {
@@ -111,7 +116,11 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
-        <GadgetCard title="Customer vs non-customer" icon={<Users className="h-4 w-4" />}>
+        <GadgetCard
+          title="Customers by defect count"
+          icon={<Users className="h-4 w-4" />}
+          subtitle="Open defects per customer, highest first"
+        >
           <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
         </GadgetCard>
 
