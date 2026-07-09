@@ -134,6 +134,14 @@ export function DashboardView({ scope, title }: Props) {
     return makePriorityVisible(priorityActive);
   }, [filterApplies, priorityActive]);
 
+  // Tickets already in a done status category (e.g. a JQL that filters by status
+  // name lets "Closed" through). They should never appear in the triage queue or
+  // be recommended to close/ping — guard here regardless of the scope's JQL.
+  const doneKeys = useMemo(
+    () => new Set(issues.filter((i) => i.statusCategory === "done").map((i) => i.key)),
+    [issues],
+  );
+
   const rows = useMemo(() => {
     if (!report) return [];
     const map = new Map(issues.map((i) => [i.key, i]));
@@ -142,14 +150,16 @@ export function DashboardView({ scope, title }: Props) {
         const issue = map.get(a.issueKey);
         return issue ? { ...a, issue } : null;
       })
-      .filter((x): x is NonNullable<typeof x> => Boolean(x));
+      .filter((x): x is NonNullable<typeof x> => Boolean(x))
+      .filter((r) => r.issue.statusCategory !== "done");
   }, [report, issues]);
 
   const filteredAnalyses = useMemo<TicketAnalysis[]>(() => {
     if (!report) return [];
-    if (!filterApplies) return report.ticketAnalyses;
-    return report.ticketAnalyses.filter((a) => priorityVisible(a.currentPriority));
-  }, [report, filterApplies, priorityVisible]);
+    return report.ticketAnalyses.filter(
+      (a) => !doneKeys.has(a.issueKey) && (!filterApplies || priorityVisible(a.currentPriority)),
+    );
+  }, [report, filterApplies, priorityVisible, doneKeys]);
 
   const filteredRows = useMemo(() => {
     if (!filterApplies) return rows;
@@ -163,15 +173,17 @@ export function DashboardView({ scope, title }: Props) {
 
   const filteredCloseCandidates = useMemo(() => {
     if (!report) return [];
-    if (!filterApplies) return report.closeCandidates;
-    return report.closeCandidates.filter((k) => filteredKeySet.has(k));
-  }, [report, filterApplies, filteredKeySet]);
+    return report.closeCandidates.filter(
+      (k) => !doneKeys.has(k) && (!filterApplies || filteredKeySet.has(k)),
+    );
+  }, [report, filterApplies, filteredKeySet, doneKeys]);
 
   const filteredPingCandidates = useMemo(() => {
     if (!report) return [];
-    if (!filterApplies) return report.pingCandidates;
-    return report.pingCandidates.filter((p) => filteredKeySet.has(p.issueKey));
-  }, [report, filterApplies, filteredKeySet]);
+    return report.pingCandidates.filter(
+      (p) => !doneKeys.has(p.issueKey) && (!filterApplies || filteredKeySet.has(p.issueKey)),
+    );
+  }, [report, filterApplies, filteredKeySet, doneKeys]);
 
   const filteredSummaries = useMemo<P0Summary[]>(() => {
     if (!report) return [];
