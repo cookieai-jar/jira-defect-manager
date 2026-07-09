@@ -13,6 +13,7 @@ import {
   Flame,
   Bug,
   Wrench,
+  Gauge,
   BookOpen,
   Boxes,
   HeartPulse,
@@ -31,6 +32,7 @@ interface NavItem {
 }
 
 const ALL_ITEMS: NavItem[] = [
+  { href: "/overview", label: "Overview", icon: Gauge },
   { href: "/all-defects", label: "All Defects", icon: Bug, scope: "alldefects" },
   { href: "/ops", label: "OPS", icon: Wrench, scope: "ops" },
   { href: "/", label: "Customer Defects", icon: LayoutDashboard, scope: "eac" },
