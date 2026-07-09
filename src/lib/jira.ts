@@ -401,6 +401,19 @@ export async function fetchRoadmapIssue(key: string): Promise<RoadmapIssueInput>
   return toRoadmapInput(raw, e.baseUrl);
 }
 
+/** Fetch just an issue's current assignee (accountId + display name), or null if unassigned. */
+export async function fetchIssueAssignee(
+  key: string,
+): Promise<{ accountId: string; displayName: string } | null> {
+  const raw = await jiraFetch<{
+    fields?: { assignee?: { accountId?: string; displayName?: string } | null };
+  }>(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=assignee`);
+  const acc = raw.fields?.assignee;
+  return acc?.accountId
+    ? { accountId: acc.accountId, displayName: acc.displayName ?? "assignee" }
+    : null;
+}
+
 /** Post a comment (ADF body) to an issue. Outward-facing — notifies watchers/mentions. */
 export async function addIssueComment(key: string, body: unknown): Promise<void> {
   await jiraFetch(`/rest/api/3/issue/${encodeURIComponent(key)}/comment`, {

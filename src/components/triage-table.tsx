@@ -11,11 +11,14 @@ import {
   ArrowUpCircle,
   ArrowDownCircle,
   Unlink,
+  AtSign,
+  Loader2,
 } from "lucide-react";
 import { Badge, TempBadge } from "@/components/ui/badge";
 import { cn, daysSince, formatDate } from "@/lib/utils";
 import { hasEpicParent } from "@/types/triage";
 import type { JiraIssue, Priority, SlaStatus, TicketAnalysis } from "@/types/triage";
+import { updatePingStats } from "@/lib/triage-ping-core";
 
 type SortKey =
   | "rank"
@@ -71,6 +74,7 @@ export function TriageTable({
   showCreated = false,
   showAssignee = false,
   showScores = true,
+  showPing = false,
   defaultSort,
 }: {
   rows: Row[];
@@ -93,6 +97,8 @@ export function TriageTable({
   showAssignee?: boolean;
   /** When true, render the Sev and Temp score columns. */
   showScores?: boolean;
+  /** When true, render a "Ping" column that comments on the ticket asking the assignee for an update. */
+  showPing?: boolean;
   /** Initial sort. Defaults to rank, descending. */
   defaultSort?: { key: SortKey; dir: "asc" | "desc" };
 }) {
@@ -311,6 +317,7 @@ export function TriageTable({
                 <Th onClick={() => clickSort("created")} active={sortKey === "created"} dir={sortDir}>Created</Th>
               )}
               <Th onClick={() => clickSort("updated")} active={sortKey === "updated"} dir={sortDir}>Updated</Th>
+              {showPing && <th className="px-3 py-2 text-left font-medium">Ping</th>}
             </tr>
           </thead>
           <tbody>
@@ -390,11 +397,19 @@ export function TriageTable({
                 <td className="px-3 py-2 text-xs text-fg-muted whitespace-nowrap">
                   {daysSince(r.issue.updated)}d ago
                 </td>
+                {showPing && (
+                  <td
+                    className="px-3 py-2 whitespace-nowrap"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <PingAssigneeCell issue={r.issue} />
+                  </td>
+                )}
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0) - (showScores ? 0 : 2)} className="px-3 py-8 text-center text-fg-muted text-sm">
+                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0) + (showPing ? 1 : 0) - (showScores ? 0 : 2)} className="px-3 py-8 text-center text-fg-muted text-sm">
                   No tickets match the current filter.
                 </td>
               </tr>
@@ -402,6 +417,103 @@ export function TriageTable({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * "Ping assignee for an update" button. Posts a JIRA comment @-mentioning the
+ * current assignee (outward-facing, confirmed first). Ping count + last-ping are
+ * derived from the ticket's own comments, so they persist across syncs.
+ */
+function PingAssigneeCell({ issue }: { issue: JiraIssue }) {
+  const stats = useMemo(
+    () => updatePingStats(issue.comments.map((c) => ({ createdAt: c.created, text: c.body }))),
+    [issue.comments],
+  );
+  const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [bumped, setBumped] = useState(false); // optimistically count this session's ping
+
+  const count = stats.count + (bumped ? 1 : 0);
+  const lastPingedAt = bumped ? new Date().toISOString() : stats.lastPingedAt;
+
+  if (!issue.assignee) {
+    return <span className="text-fg-subtle text-xs">unassigned</span>;
+  }
+
+  const doPing = async () => {
+    if (
+      !window.confirm(
+        `Post a comment on ${issue.key} pinging ${issue.assignee} for a status update?\n\nThis notifies them in JIRA.`,
+      )
+    )
+      return;
+    setState("busy");
+    setMsg(null);
+    try {
+      const res = (await fetch("/api/triage/ping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueKey: issue.key }),
+      }).then((r) => r.json())) as {
+        ok: boolean;
+        posted?: boolean;
+        assignee?: string;
+        message?: string;
+        error?: string;
+      };
+      if (res.ok && res.posted) {
+        setState("done");
+        setMsg(`Pinged ${res.assignee ?? "assignee"}`);
+        setBumped(true);
+      } else if (res.ok) {
+        setState("done");
+        setMsg(res.message ?? "Nothing to ping");
+      } else {
+        setState("error");
+        setMsg(res.error ?? "Failed");
+      }
+    } catch (e) {
+      setState("error");
+      setMsg(e instanceof Error ? e.message : "Failed");
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={doPing}
+        disabled={state === "busy"}
+        title={`Comment on ${issue.key} asking ${issue.assignee} for a status update`}
+        className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/20 transition-colors disabled:opacity-60"
+      >
+        {state === "busy" ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <AtSign className="h-3 w-3" />
+        )}
+        {state === "busy" ? "Pinging…" : "Ping"}
+      </button>
+      {state === "done" && (
+        <span className="text-[11px] text-success" title={msg ?? ""}>
+          ✓
+        </span>
+      )}
+      {state === "error" && (
+        <span className="text-[11px] text-danger" title={msg ?? ""}>
+          ⚠
+        </span>
+      )}
+      {count > 0 && lastPingedAt && (
+        <span
+          className="text-[10px] text-fg-subtle whitespace-nowrap"
+          title={`Last pinged ${new Date(lastPingedAt).toLocaleString()}`}
+        >
+          {count}× · {daysSince(lastPingedAt)}d
+        </span>
+      )}
     </div>
   );
 }

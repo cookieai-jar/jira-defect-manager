@@ -382,6 +382,7 @@ export function DashboardView({ scope, title }: Props) {
                   showCreated={scope === "sec"}
                   showAssignee
                   showScores={false}
+                  showPing={scope === "eac"}
                   defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
                 />
               </section>
