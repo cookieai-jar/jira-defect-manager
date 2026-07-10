@@ -437,4 +437,42 @@ describe("buildFleetSummaries", () => {
     expect(a.extractionErrors).toBe(56); // 5 + 50 + 1 (display volume, from errorRows)
     expect(a.healthScore).toBe(50); // 2 of 4 failing (gauge), no alerts -> 100*(1-0.5)
   });
+
+  it("widens the score denominator with the known-integration inventory (idle-but-healthy)", () => {
+    // A low-activity tenant: no extraction volume in the window, 2 failing
+    // datasources, but 10 integrations known via the parsed-success gauge.
+    // Without inventory the universe would be just the 2 failing -> score 0;
+    // with it the denominator is 10 -> proportional score reflects reality.
+    const base = {
+      extractionRows: [],
+      errorRows: [],
+      failingRows: [
+        { tenant: "quietco", agent: "salesforce", value: 1 },
+        { tenant: "quietco", agent: "servicenow", value: 1 },
+      ],
+      alertsByTenant: new Map<string, TenantAlert[]>(),
+    };
+    const withoutInv = buildFleetSummaries(base, makeNameResolver([])).find(
+      (r) => r.tenant === "quietco",
+    )!;
+    expect(withoutInv.healthScore).toBe(0); // universe = 2 failing only -> all unhealthy
+
+    const inventoryRows = [
+      "salesforce",
+      "servicenow",
+      "okta",
+      "aws",
+      "azure",
+      "gcp",
+      "workday",
+      "ad",
+      "snowflake",
+      "veza",
+    ].map((agent) => ({ tenant: "quietco", agent, value: 1 }));
+    const withInv = buildFleetSummaries({ ...base, inventoryRows }, makeNameResolver([])).find(
+      (r) => r.tenant === "quietco",
+    )!;
+    expect(withInv.integrations).toBe(10);
+    expect(withInv.healthScore).toBe(80); // 2 of 10 failing -> 100*(1-0.2)
+  });
 });

@@ -228,6 +228,14 @@ interface FleetInputs {
    * page weights, so fleet & detail rank tenants consistently. Drives the score.
    */
   failingRows: Array<{ tenant: string; agent: string; value: number }>;
+  /**
+   * Per (tenant, agent_type) KNOWN integrations — every datasource that has ever
+   * parsed successfully (freshness gauge), regardless of window activity. Widens
+   * the score denominator so a low-activity tenant with a few failing datasources
+   * isn't scored as 100% unhealthy (it would collapse to 0 while the detail page,
+   * which sees the healthy idle integrations, shows a much higher score).
+   */
+  inventoryRows?: Array<{ tenant: string; agent: string; value: number }>;
   /** Per-tenant alerts. */
   alertsByTenant: Map<string, TenantAlert[]>;
   /** Per-tenant pending extract-queue depth (backlog). */
@@ -285,11 +293,21 @@ export function buildFleetSummaries(
       failingAgentsByTenant.set(r.tenant, set);
     }
   }
+  // Known-integration inventory per tenant (parsed-success gauge). Includes the
+  // healthy, idle integrations that had no extraction volume in the window.
+  const knownByTenant = new Map<string, Set<string>>();
+  for (const r of inputs.inventoryRows ?? []) {
+    if (!r.agent || r.agent === "?") continue;
+    const set = knownByTenant.get(r.tenant) ?? new Set<string>();
+    set.add(r.agent);
+    knownByTenant.set(r.tenant, set);
+  }
 
   const tenants = new Set<string>([
     ...extractionsByTenant.keys(),
     ...errorsByTenant.keys(),
     ...failingAgentsByTenant.keys(),
+    ...knownByTenant.keys(),
     ...inputs.alertsByTenant.keys(),
   ]);
 
@@ -306,7 +324,11 @@ export function buildFleetSummaries(
     // integration universe + weight (worst severity per agent wins), and reserve
     // infra (non-integration) alerts for the capped penalty. Keeps detail & fleet
     // scores consistent for the same tenant.
-    const universe = new Set<string>([...(integrationsByTenant.get(tenant) ?? []), ...failingAgents]);
+    const universe = new Set<string>([
+      ...(integrationsByTenant.get(tenant) ?? []),
+      ...(knownByTenant.get(tenant) ?? []),
+      ...failingAgents,
+    ]);
     const intAlertSev = new Map<string, "critical" | "warning">();
     for (const a of firing) {
       if (a.integration && (a.severity === "critical" || a.severity === "warning")) {
@@ -799,23 +821,28 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
   let extractionRows: Array<{ tenant: string; agent: string; value: number }> = [];
   let errorRows: Array<{ tenant: string; agent: string; value: number }> = [];
   let failingRows: Array<{ tenant: string; agent: string; value: number }> = [];
+  let inventoryRows: Array<{ tenant: string; agent: string; value: number }> = [];
   const pendingByTenant = new Map<string, number>();
   try {
     const toRows = (rows: Awaited<ReturnType<typeof queryInstant>>) =>
       rows
         .filter((r) => r.metric.tenant_id)
         .map((r) => ({ tenant: r.metric.tenant_id, agent: r.metric.agent_type ?? "?", value: r.value }));
-    const [ext, err, failing, pending] = await Promise.all([
+    const [ext, err, failing, inventory, pending] = await Promise.all([
       queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_total[${w}]))`),
       queryInstant(`sum by (tenant_id, agent_type) (increase(veza_platform_extraction_errors_total[${w}]))`),
       // authoritative currently-failing datasources (same gauge the detail page weights)
       queryInstant(`sum by (tenant_id, agent_type) (cookie_platform_scheduling_error_reasons{stage="extract"})`),
+      // known-integration inventory: every datasource that has ever parsed, so the
+      // score denominator includes healthy idle integrations (matches the detail).
+      queryInstant(`max by (tenant_id, agent_type) (cookie_platform_scheduling_parsed_at_success_ms_max)`),
       // backlog: pending extract-queue depth per tenant
       queryInstant(`sum by (tenant_id) (cookie_platform_scheduling_queue_size{state="pending", stage="extract"})`),
     ]);
     extractionRows = toRows(ext);
     errorRows = toRows(err);
     failingRows = toRows(failing);
+    inventoryRows = toRows(inventory);
     for (const r of pending) if (r.metric.tenant_id) pendingByTenant.set(r.metric.tenant_id, r.value);
     sources.grafanaMetrics = true;
   } catch (e) {
@@ -856,7 +883,7 @@ export async function buildFleet(opts: BuildOptions = {}): Promise<FleetReport> 
     return matched != null && whiteGloveKeys.has(normalizeKey(matched));
   };
   const tenants = buildFleetSummaries(
-    { extractionRows, errorRows, failingRows, alertsByTenant, pendingByTenant, historyByTenant },
+    { extractionRows, errorRows, failingRows, inventoryRows, alertsByTenant, pendingByTenant, historyByTenant },
     makeNameResolver(customers),
     isWhiteGlove,
   );
