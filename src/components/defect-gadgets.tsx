@@ -102,12 +102,17 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <GadgetCard title="Priority distribution" icon={<Flag className="h-4 w-4" />}>
           <BarList data={priorityDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-          <MiniTrend trend={trends.priority} keys={trendKeys(priorityDist)} colors={PRIORITY_TREND_COLORS} />
+          <MiniTrend
+            trend={trends.priority}
+            keys={trendKeys(priorityDist)}
+            colors={PRIORITY_TREND_COLORS}
+            yLabel="Open tickets"
+          />
         </GadgetCard>
 
         <GadgetCard title="Status distribution" icon={<ListChecks className="h-4 w-4" />}>
           <BarList data={statusDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-          <MiniTrend trend={trends.status} keys={trendKeys(statusDist)} />
+          <MiniTrend trend={trends.status} keys={trendKeys(statusDist)} yLabel="Open tickets" />
         </GadgetCard>
 
         <GadgetCard
@@ -133,12 +138,12 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           {pastSla.breakdown.length > 0 && (
             <BarList data={pastSla.breakdown} total={pastSla.allKeys.length} jiraBaseUrl={jiraBaseUrl} />
           )}
-          <MiniTrend trend={trends.sla} colors={{ late: "hsl(0 80% 62%)" }} />
+          <MiniTrend trend={trends.sla} colors={{ late: "hsl(0 80% 62%)" }} yLabel="Late tickets" />
         </GadgetCard>
 
         <GadgetCard title="Assignee distribution" icon={<UserRound className="h-4 w-4" />}>
           <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-          <MiniTrend trend={trends.assignee} keys={trendKeys(assigneeDist)} />
+          <MiniTrend trend={trends.assignee} keys={trendKeys(assigneeDist)} yLabel="Open tickets" />
         </GadgetCard>
 
         <GadgetCard
@@ -147,7 +152,7 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           subtitle="Open defects per customer, highest first"
         >
           <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
-          <MiniTrend trend={trends.customer} keys={trendKeys(customerDist)} />
+          <MiniTrend trend={trends.customer} keys={trendKeys(customerDist)} yLabel="Open defects" />
         </GadgetCard>
 
         <CategorizationGadget issues={issues} jiraBaseUrl={jiraBaseUrl} trend={trends.category} />
@@ -252,7 +257,7 @@ function CategorizationGadget({
           <p className="text-[11px] text-fg-subtle mt-2">
             {cat.total} tickets · analyzed {formatWhen(cat.categorizedAt)}
           </p>
-          <MiniTrend trend={trend} keys={cat.categories.map((c) => c.name)} />
+          <MiniTrend trend={trend} keys={cat.categories.map((c) => c.name)} yLabel="Tickets" />
         </>
       )}
     </GadgetCard>
