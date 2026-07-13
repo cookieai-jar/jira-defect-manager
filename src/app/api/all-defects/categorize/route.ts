@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { getConfigValue, listIssues, setConfigValue } from "@/lib/db";
+import {
+  getConfigValue,
+  listIssues,
+  recordDefectSnapshot,
+  setConfigValue,
+} from "@/lib/db";
 import { categorizeDefects } from "@/lib/defect-categorize";
 import type { DefectCategorization } from "@/lib/defect-categorize-core";
 
@@ -29,5 +34,11 @@ export async function POST() {
   const now = new Date().toISOString();
   const categorization = await categorizeDefects(issues, { now });
   setConfigValue(KV_KEY, JSON.stringify(categorization));
+  // Record today's category distribution for the tile trend (category can't be
+  // reconstructed historically — it accrues from each analysis run).
+  recordDefectSnapshot(
+    now.slice(0, 10),
+    categorization.categories.map((c) => ({ grp: "category", key: c.name, count: c.count })),
+  );
   return NextResponse.json({ categorization });
 }

@@ -137,6 +137,16 @@ export function db(): DatabaseSync {
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (tenant, integration)
     );
+
+    -- All Defects: daily historical distribution snapshots for the tile trends.
+    -- One row per (day, group, key), e.g. (2026-07-13, "priority", "P1", 5).
+    CREATE TABLE IF NOT EXISTS defect_snapshots (
+      day TEXT NOT NULL,
+      grp TEXT NOT NULL,
+      k TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      PRIMARY KEY (day, grp, k)
+    );
   `);
 
   // Migrate: add scope column to tables that need it. Existing rows default to 'eac'.
@@ -534,4 +544,53 @@ export function snapshotsByTenantSince(sinceIso: string): Map<string, Array<{ t:
 /** Delete snapshots older than `beforeIso` (rolling-window prune). */
 export function pruneHealthSnapshots(beforeIso: string): void {
   db().prepare(`DELETE FROM health_snapshots WHERE ts < ?`).run(beforeIso);
+}
+
+/* ---------- All Defects trend snapshots ---------- */
+
+/**
+ * Replace one day's rows for the given groups. Each call fully rewrites the
+ * (day, grp) cells present in `points`, so a key that dropped to zero for that
+ * group/day disappears rather than lingering.
+ */
+export function recordDefectSnapshot(
+  day: string,
+  points: Array<{ grp: string; key: string; count: number }>,
+): void {
+  const conn = db();
+  const groups = new Set(points.map((p) => p.grp));
+  const del = conn.prepare(`DELETE FROM defect_snapshots WHERE day = ? AND grp = ?`);
+  const ins = conn.prepare(`INSERT INTO defect_snapshots (day, grp, k, count) VALUES (?, ?, ?, ?)`);
+  conn.exec("BEGIN");
+  try {
+    for (const g of groups) del.run(day, g);
+    for (const p of points) ins.run(day, p.grp, p.key, Math.round(p.count));
+    conn.exec("COMMIT");
+  } catch (e) {
+    conn.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** All defect snapshot rows on/after `sinceDay` (YYYY-MM-DD), ascending by day. */
+export function listDefectSnapshots(
+  sinceDay: string,
+): Array<{ day: string; grp: string; key: string; count: number }> {
+  const rows = db()
+    .prepare(`SELECT day, grp, k, count FROM defect_snapshots WHERE day >= ? ORDER BY day`)
+    .all(sinceDay) as Array<{ day: string; grp: string; k: string; count: number }>;
+  return rows.map((r) => ({ day: r.day, grp: r.grp, key: r.k, count: r.count }));
+}
+
+/** Whether a snapshot exists for a given (day, group) — used to throttle daily writes. */
+export function hasDefectSnapshot(day: string, grp: string): boolean {
+  const row = db()
+    .prepare(`SELECT 1 FROM defect_snapshots WHERE day = ? AND grp = ? LIMIT 1`)
+    .get(day, grp) as { 1: number } | undefined;
+  return row != null;
+}
+
+/** Delete defect snapshots older than `beforeDay` (rolling-window prune). */
+export function pruneDefectSnapshots(beforeDay: string): void {
+  db().prepare(`DELETE FROM defect_snapshots WHERE day < ?`).run(beforeDay);
 }

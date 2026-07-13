@@ -97,10 +97,19 @@ export function computeSlaStatus(
   priority: Priority | null,
   createdIso: string,
 ): SlaStatus {
+  return computeSlaStatusAt(priority, createdIso, Date.now());
+}
+
+/** Like {@link computeSlaStatus} but evaluated as of an explicit time (for historical reconstruction). */
+export function computeSlaStatusAt(
+  priority: Priority | null,
+  createdIso: string,
+  nowMs: number,
+): SlaStatus {
   if (!priority) return "best-effort";
   const created = new Date(createdIso);
   if (isNaN(created.getTime())) return "best-effort";
-  const ageDays = (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24);
+  const ageDays = (nowMs - created.getTime()) / (1000 * 60 * 60 * 24);
   const target = slaTargetDays(priority);
   if (priority === "P3" && PRIORITY_DEFINITIONS.P3.slaFixDays == null) {
     // P3 has no fix commitment. Late = investigation hasn't started in time.

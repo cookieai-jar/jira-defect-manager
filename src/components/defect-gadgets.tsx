@@ -10,7 +10,14 @@ import {
   fingerprintIssues,
   type DefectCategorization,
 } from "@/lib/defect-categorize-core";
+import type { GroupTrend } from "@/lib/defect-trends-core";
+import { MiniTrend, PRIORITY_TREND_COLORS } from "@/components/mini-trend";
 import { cn } from "@/lib/utils";
+
+/** Series keys shown as bars, minus the aggregate "Others (N)" pseudo-row (no trend series). */
+function trendKeys(data: { label: string }[]): string[] {
+  return data.map((d) => d.label).filter((l) => !l.startsWith("Others"));
+}
 
 interface Row extends TicketAnalysis {
   issue: JiraIssue;
@@ -27,6 +34,20 @@ const PRIORITY_BAR: Record<Priority | "Unset", string> = {
 /** All Defects analytics gadgets. Every count deep-links to the ticket set in JIRA. */
 export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl: string }) {
   const issues = useMemo(() => rows.map((r) => r.issue), [rows]);
+  const [trends, setTrends] = useState<Record<string, GroupTrend>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/all-defects/trends")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setTrends(d.trends ?? {});
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const priorityDist = useMemo(() => {
     const order: (Priority | "Unset")[] = ["P0", "P1", "P2", "P3", "Unset"];
@@ -81,10 +102,12 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <GadgetCard title="Priority distribution" icon={<Flag className="h-4 w-4" />}>
           <BarList data={priorityDist} total={total} jiraBaseUrl={jiraBaseUrl} />
+          <MiniTrend trend={trends.priority} keys={trendKeys(priorityDist)} colors={PRIORITY_TREND_COLORS} />
         </GadgetCard>
 
         <GadgetCard title="Status distribution" icon={<ListChecks className="h-4 w-4" />}>
           <BarList data={statusDist} total={total} jiraBaseUrl={jiraBaseUrl} />
+          <MiniTrend trend={trends.status} keys={trendKeys(statusDist)} />
         </GadgetCard>
 
         <GadgetCard
@@ -110,10 +133,12 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           {pastSla.breakdown.length > 0 && (
             <BarList data={pastSla.breakdown} total={pastSla.allKeys.length} jiraBaseUrl={jiraBaseUrl} />
           )}
+          <MiniTrend trend={trends.sla} colors={{ late: "hsl(0 80% 62%)" }} />
         </GadgetCard>
 
         <GadgetCard title="Assignee distribution" icon={<UserRound className="h-4 w-4" />}>
           <BarList data={assigneeDist} total={total} jiraBaseUrl={jiraBaseUrl} />
+          <MiniTrend trend={trends.assignee} keys={trendKeys(assigneeDist)} />
         </GadgetCard>
 
         <GadgetCard
@@ -122,9 +147,10 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
           subtitle="Open defects per customer, highest first"
         >
           <BarList data={customerDist} total={total} jiraBaseUrl={jiraBaseUrl} />
+          <MiniTrend trend={trends.customer} keys={trendKeys(customerDist)} />
         </GadgetCard>
 
-        <CategorizationGadget issues={issues} jiraBaseUrl={jiraBaseUrl} />
+        <CategorizationGadget issues={issues} jiraBaseUrl={jiraBaseUrl} trend={trends.category} />
       </div>
     </section>
   );
@@ -135,9 +161,11 @@ export function DefectGadgets({ rows, jiraBaseUrl }: { rows: Row[]; jiraBaseUrl:
 function CategorizationGadget({
   issues,
   jiraBaseUrl,
+  trend,
 }: {
   issues: JiraIssue[];
   jiraBaseUrl: string;
+  trend: GroupTrend | undefined;
 }) {
   const [cat, setCat] = useState<DefectCategorization | null>(null);
   const [loading, setLoading] = useState(true);
@@ -224,6 +252,7 @@ function CategorizationGadget({
           <p className="text-[11px] text-fg-subtle mt-2">
             {cat.total} tickets · analyzed {formatWhen(cat.categorizedAt)}
           </p>
+          <MiniTrend trend={trend} keys={cat.categories.map((c) => c.name)} />
         </>
       )}
     </GadgetCard>
