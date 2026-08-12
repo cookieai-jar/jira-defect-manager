@@ -423,6 +423,71 @@ export interface DefectMetric {
 }
 
 // ---------------------------------------------------------------------------
+// Per-component analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * One defect group as it appears WITHIN a single JIRA component. Deliberately a
+ * reference into the parent report's `groups` rather than a copy — duplicating
+ * whole groups across nine components would multiply the stored report for no
+ * new information. The UI joins on `groupKey`.
+ */
+export interface ComponentGroupSlice {
+  groupKey: string;
+  name: string;
+  /** Defects in this component AND this group. */
+  ticketCount: number;
+  /** Percentage of THIS COMPONENT's defects (0-100, rounded). */
+  share: number;
+  issueKeys: string[];
+  detectionStages: Array<{ stage: DetectionStage; count: number }>;
+  triggers: Array<{ trigger: DefectTrigger; count: number }>;
+}
+
+/**
+ * Everything the per-component dashboard renders. Counts, group slices,
+ * metrics and code correlation are computed deterministically from the parent
+ * report's signals; only `summary`, `escapeAnalysis` and `strategies` come from
+ * the model, and they are what make a component page worth visiting rather than
+ * a filtered table.
+ *
+ * A defect carrying two components appears under both — components are tags,
+ * not a partition, so slice counts sum to more than the population.
+ */
+export interface ComponentAnalysis {
+  /** JIRA component name, e.g. "Lifecycle Management". */
+  component: string;
+  /** URL slug, e.g. "lifecycle-management". */
+  slug: string;
+  defectCount: number;
+  /** Percentage of all analyzed defects (0-100, rounded). */
+  share: number;
+  issueKeys: string[];
+  severityAvg: number;
+  preventabilityAvg: number;
+  regressionCount: number;
+  detectionStages: Array<{ stage: DetectionStage; count: number }>;
+  triggers: Array<{ trigger: DefectTrigger; count: number }>;
+  /** Product areas and failure modes most seen in this component. */
+  topAreas: string[];
+  topFailureModes: string[];
+  /** This component's defects, bucketed by the report-wide taxonomy. */
+  groups: ComponentGroupSlice[];
+  /** Markdown, concise: what fails in THIS component and why. */
+  summary: string;
+  /** Markdown, concise: which gate keeps missing this component's defects. */
+  escapeAnalysis: string;
+  /** Actions specific to this component. */
+  strategies: PreventionStrategy[];
+  /** Metric series recomputed over this component's defects only. */
+  metrics: DefectMetric[];
+  /** Code correlation restricted to this component's defects. */
+  codeCorrelation: CodeCorrelation | null;
+  /** Teams owning code that this component's defects were fixed in. */
+  teams: TeamCodeStats[];
+}
+
+// ---------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------
 
@@ -440,4 +505,11 @@ export interface ProductDefectAnalysis {
   teamPlans: TeamActionPlan[];
   codeCorrelation: CodeCorrelation | null;
   signals: DefectSignal[];
+  /**
+   * Per-JIRA-component analyses, descending by defect count. Only components
+   * clearing the configured minimum get an entry — below that there is not
+   * enough evidence for a pattern, and a thin narrative reads as speculation.
+   * Defects in excluded components still count toward everything above.
+   */
+  components: ComponentAnalysis[];
 }

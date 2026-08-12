@@ -214,6 +214,12 @@ export interface AppConfig {
   pdaDashboard: boolean;
   /** Absolute path to the product source repo that defects are correlated against. */
   codeRepoPath: string;
+  /**
+   * Minimum defects a JIRA component needs before it gets its own Product
+   * Defect Analysis page. Below this there isn't enough evidence for a pattern,
+   * and a thin narrative reads as speculation.
+   */
+  pdaComponentMinDefects: number;
   sprintLengthDays: number;
   inactivityThresholdDays: number;
   pingThresholdDays: number;

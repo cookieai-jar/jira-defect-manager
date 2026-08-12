@@ -3,6 +3,7 @@ import type {
   ActionPriority,
   CodeCorrelation,
   CodeHotspot,
+  ComponentAnalysis,
   DefectGroup,
   DefectMetric,
   DefectSignal,
@@ -1166,6 +1167,225 @@ export function normalizeTeamPlans(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6 — per-component narrative
+// ---------------------------------------------------------------------------
+
+/**
+ * Word budgets convert to character clamps at the same ~9.3 chars/word the
+ * global fields use (group analysis: 120 words → 1100; group escape analysis:
+ * 80 words → 750). Keeping the ratio identical means a component narrative that
+ * blows its budget is truncated as hard as a group one, rather than quietly
+ * being allowed twice the prose because it is one level down.
+ */
+const COMPONENT_SUMMARY_MAX = 840; // 90 words
+const COMPONENT_ESCAPE_MAX = 560; // 60 words
+
+interface RawComponentNarrative {
+  summary?: unknown;
+  escapeAnalysis?: unknown;
+  strategies?: unknown;
+  /** Fields the model sometimes echoes back; deliberately never read. */
+  defectCount?: unknown;
+  groups?: unknown;
+}
+
+export interface ComponentNarrativeOptions {
+  /**
+   * Metric keys a component strategy may cite, on top of the slice's own
+   * recomputed metrics — normally the report-wide metric keys.
+   */
+  metricKeys?: readonly string[];
+  /**
+   * Keys already taken by the global strategies (and anything else that shares
+   * the report's key namespace). Seeded into the uniqueness check so a
+   * component strategy can never shadow a global one.
+   */
+  reservedStrategyKeys?: readonly string[];
+}
+
+/**
+ * Namespace a component strategy key by its component slug.
+ *
+ * Component strategies live in the same flat key space as the global ones (the
+ * UI links strategies by key, and a team plan cites `strategyKeys` without
+ * saying where they came from), so `flaky-fixtures` proposed for Integrations
+ * must not silently resolve to the global `flaky-fixtures`. The `comp-` prefix
+ * plus the slug makes the origin readable in a URL and collision-proof in
+ * practice; `applyComponentNarrative` still de-duplicates against the reserved
+ * global keys for the pathological case.
+ */
+export function componentStrategyKey(slug: string, key: string): string {
+  return `comp-${slugify(slug)}-${slugify(key)}`;
+}
+
+/**
+ * The code context for one component: the teams that own the code its defects
+ * were fixed in, and its hottest paths. Built with the same live-first,
+ * stale-flagged ranking as the deep-dive so the model treats a deleted
+ * directory identically in both prompts.
+ */
+export function componentCodeContext(slice: ComponentAnalysis): GroupCodeContext | null {
+  const corr = slice.codeCorrelation;
+  const teams = uniq([
+    ...slice.teams.map((t) => t.team),
+    ...(corr?.byTeam ?? []).map((t) => t.team),
+  ]).slice(0, 8);
+  const areaHotspots = promptHotspots(corr?.areaHotspots ?? [], 8);
+  const fileHotspots = promptHotspots(corr?.fileHotspots ?? [], 10);
+  if (teams.length === 0 && areaHotspots.length === 0 && fileHotspots.length === 0) return null;
+  return {
+    teams,
+    areaHotspots,
+    fileHotspots,
+    linkedTickets: corr?.linkedTickets ?? 0,
+    hasStalePaths: [...areaHotspots, ...fileHotspots].some((h) => h.existsAtHead === false),
+  };
+}
+
+/**
+ * The prompt payload for one component. Everything here is deterministic —
+ * the model is being asked to explain numbers it cannot change.
+ */
+export function componentPromptPayload(
+  slice: ComponentAnalysis,
+  signalByKey: Map<string, DefectSignal>,
+  opts: { metricKeys?: readonly string[]; reportSummary?: string } = {},
+) {
+  const samples = slice.issueKeys
+    .map((k) => signalByKey.get(k))
+    .filter((s): s is DefectSignal => Boolean(s))
+    .sort((a, b) => b.severityScore - a.severityScore || a.issueKey.localeCompare(b.issueKey))
+    .slice(0, 20)
+    .map((s) => ({
+      key: s.issueKey,
+      area: s.area,
+      failureMode: s.failureMode,
+      symptom: s.symptom,
+      suspectedRootCause: s.suspectedRootCause,
+      triggerCondition: s.triggerCondition,
+      escapeReason: s.escapeReason,
+      detectionStage: s.detectionStage,
+      trigger: s.trigger,
+      isRegression: s.isRegression,
+    }));
+  return {
+    component: {
+      name: slice.component,
+      slug: slice.slug,
+      defectCount: slice.defectCount,
+      sharePct: slice.share,
+      severityAvg: slice.severityAvg,
+      preventabilityAvg: slice.preventabilityAvg,
+      regressionCount: slice.regressionCount,
+      detectionStages: slice.detectionStages,
+      triggers: slice.triggers,
+      topAreas: slice.topAreas,
+      topFailureModes: slice.topFailureModes,
+    },
+    groups: slice.groups.map((g) => ({
+      groupKey: g.groupKey,
+      name: g.name,
+      ticketCount: g.ticketCount,
+      sharePct: g.share,
+      detectionStages: g.detectionStages,
+      triggers: g.triggers,
+    })),
+    codeContext: componentCodeContext(slice),
+    metricKeys: uniq([...slice.metrics.map((m) => m.key), ...(opts.metricKeys ?? [])]).slice(0, 40),
+    /**
+     * The report-wide summary, so the model can say something DIFFERENT rather
+     * than paraphrasing the page the reader already read to get here.
+     */
+    reportWideSummary: cleanStr(opts.reportSummary, 600),
+    samples,
+  };
+}
+
+/**
+ * Merge one component's model-written narrative onto its deterministic slice.
+ *
+ * Only `summary`, `escapeAnalysis` and `strategies` are taken from the model.
+ * Every count, group slice, metric series and correlation is passed through by
+ * spread — a response that tries to rewrite `defectCount` or `groups` is
+ * ignored outright, because the component page renders those numbers next to
+ * this prose and the two disagreeing would discredit both.
+ */
+export function applyComponentNarrative(
+  slice: ComponentAnalysis,
+  raw: unknown,
+  opts: ComponentNarrativeOptions = {},
+): ComponentAnalysis {
+  const r = (raw && typeof raw === "object" ? raw : {}) as RawComponentNarrative;
+  const validGroupKeys = new Set(slice.groups.map((g) => g.groupKey));
+  const knownMetricKeys = new Set<string>([
+    ...slice.metrics.map((m) => m.key),
+    ...(opts.metricKeys ?? []),
+  ]);
+  // Paths known to be gone at HEAD must never reach `codeAreas`: an action item
+  // pointed at a deleted directory costs a team a wasted investigation.
+  const stalePaths = new Set(
+    [
+      ...(slice.codeCorrelation?.areaHotspots ?? []),
+      ...(slice.codeCorrelation?.fileHotspots ?? []),
+    ]
+      .filter((h) => h.existsAtHead === false)
+      .map((h) => h.path),
+  );
+  // Seeded with the global keys so `uniqueKey` treats a collision with a global
+  // strategy exactly like a collision inside this component.
+  const usedKeys = new Set<string>(opts.reservedStrategyKeys ?? []);
+  const fallbackTeam = slice.teams[0]?.team ?? slice.codeCorrelation?.byTeam[0]?.team ?? "";
+
+  const rawStrategies: RawStrategy[] = Array.isArray(r.strategies)
+    ? (r.strategies as RawStrategy[])
+    : [];
+  const strategies: PreventionStrategy[] = [];
+  for (const s of rawStrategies) {
+    const title = cleanStr(s?.title, 200);
+    if (!title) continue;
+    const claimed = toStringArray(s?.groupKeys, 80);
+    const groupKeys = uniq(claimed.filter((k) => validGroupKeys.has(k)));
+    // Same rule as the global phase, scoped to THIS component's slices: a
+    // strategy citing only groups this component does not have is grounded in
+    // nothing. Citing none at all means "the whole component".
+    if (claimed.length > 0 && groupKeys.length === 0) continue;
+    strategies.push({
+      key: uniqueKey(componentStrategyKey(slice.slug, cleanStr(s?.key, 80) || title), usedKeys),
+      title,
+      detail: cleanStr(s?.detail, 600),
+      discipline: oneOf<PreventionDiscipline>(s?.discipline, PREVENTION_DISCIPLINES, "process"),
+      team: cleanStr(s?.team, 120) || fallbackTeam || "Engineering",
+      groupKeys: groupKeys.slice(0, 8),
+      effort: oneOf<Effort>(s?.effort, EFFORTS, "medium"),
+      priority: oneOf<ActionPriority>(s?.priority, ACTION_PRIORITIES, "next"),
+      expectedImpact: cleanStr(s?.expectedImpact, 400),
+      metricKeys: uniq(
+        toStringArray(s?.metricKeys, 80).filter((k) => knownMetricKeys.has(k)),
+      ).slice(0, 6),
+      codeAreas: uniq(toStringArray(s?.codeAreas, 200).filter((p) => !stalePaths.has(p))).slice(
+        0,
+        5,
+      ),
+    });
+  }
+  strategies.sort(
+    (a, b) =>
+      PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+      DISCIPLINE_RANK[a.discipline] - DISCIPLINE_RANK[b.discipline] ||
+      a.title.localeCompare(b.title),
+  );
+
+  return {
+    ...slice,
+    summary: cleanStr(r.summary, COMPONENT_SUMMARY_MAX),
+    escapeAnalysis: cleanStr(r.escapeAnalysis, COMPONENT_ESCAPE_MAX),
+    // The prompt asks for 2-4; anything past 4 is the model padding, and a
+    // component page with eight actions gets none of them done.
+    strategies: strategies.slice(0, 4),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
 
@@ -1340,11 +1560,51 @@ ${EVIDENCE_RULES}
 
 Return ONLY the JSON array inside a \`\`\`json fence. No prose.`;
 
+const COMPONENT_SYSTEM = `You are a principal engineer writing the drilldown page for ONE JIRA COMPONENT in Veza's customer-found defect analysis. The reader is the engineering manager who owns this component; they have already read the report-wide summary and clicked through because they want to know what is wrong with THEIR area specifically.
+
+${PRODUCT_CONTEXT}
+
+You are given, for this component only: its name, its deterministic statistics (defect count, share of all defects, average severity and preventability, regression count, detection-stage distribution, trigger distribution, top product areas, top failure modes), the report-wide defect groups as they appear WITHIN this component (group key, name, count, and that slice's own detection-stage and trigger distributions), a sample of its defect signals, the metric keys available to cite, the report-wide executive summary, and — when available — CODE CONTEXT: the CODEOWNERS teams and hottest directories/files that THIS component's fix commits touched.
+
+CRITICAL — every number and every group membership is computed mechanically. Do not restate counts, shares, averages or percentages: they are rendered next to your text. Numbers you write will be discarded. Never invent a ticket key; echo only keys from the samples.
+
+SPECIFICITY IS THE WHOLE POINT. The report-wide summary is given to you so you can say something ELSE. A summary that would be equally true of any other component is a failure — it must name this component's own mechanism and its own paths.
+
+STALE PATHS: hotspots come from ~400 days of git history. Any hotspot with \`"existsAtHead": false\` has since been moved or deleted. Cite it only when explaining history, never as current code, and never target remediation at it or list it in \`codeAreas\`. When a live path makes the same point, use the live one.
+
+A \`detectionStage\` of "unclassified" means extraction failed to judge that ticket — missing data, NOT a finding. Exclude it when reasoning about which gate is weakest; if it dominates this component's distribution, say the sample is too thin to conclude rather than inventing a gap.
+
+Produce ONE JSON object:
+- summary: markdown, AT MOST 90 WORDS. What fails in THIS component and the mechanism that permits it — the specific subsystem, the specific failure path, named against the real directories/files in the code context. One dense paragraph or 3 tight bullets. At most 2 ticket keys. No preamble, no restating the group names back, no sentence that only sets up the next one.
+- escapeAnalysis: markdown, AT MOST 60 WORDS. Which gate keeps missing THIS component's defects, per ITS OWN detection-stage distribution, and the concrete fixture/environment gap behind it — which fixture, which tenant shape, which 3rd-party behaviour is absent from our test estate. Name the gap, not the discipline.
+- strategies: array of 2-4 actions scoped to THIS component. Each:
+   * key: short kebab-case identifier, unique within this component.
+   * title: imperative and specific ("Record an Okta fixture with nested OUs and assert group expansion").
+   * detail: markdown, AT MOST 55 WORDS. Exactly WHAT to build or change and WHERE, naming real live paths from the code context. An engineer should be able to open a ticket from this.
+   * discipline: EXACTLY one of ${PREVENTION_DISCIPLINES.join(" | ")}.
+   * team: the owning team. STRONGLY prefer one of the CODEOWNERS team slugs in this component's code context, verbatim. Use an engineering function name only when none of them owns this work.
+   * groupKeys: array of group keys from THIS component's group slices, using the EXACT keys given. Empty only when the action covers the whole component.
+   * effort: "low" | "medium" | "high".
+   * priority: "now" | "next" | "later" — driven by this component's volume × preventability.
+   * expectedImpact: 1-2 sentences naming which of this component's defects it would have prevented.
+   * metricKeys: 0-3 keys from the supplied metric keys that would prove it worked. Omit rather than invent.
+   * codeAreas: 0-5 real, LIVE paths from this component's code context.
+
+${EVIDENCE_RULES}
+
+Return ONLY the JSON object inside a \`\`\`json fence. No prose.`;
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
-export type AnalyzePhase = "extract" | "synthesize" | "deep-dive" | "strategies" | "teams";
+export type AnalyzePhase =
+  | "extract"
+  | "synthesize"
+  | "deep-dive"
+  | "strategies"
+  | "teams"
+  | "components";
 
 export interface AnalyzeOptions {
   model?: string;
@@ -1375,6 +1635,14 @@ export interface AnalyzeOptions {
   correlationForGroups?: (
     groups: Array<{ key: string; issueKeys: string[] }>,
   ) => CodeCorrelation["byGroup"];
+  /**
+   * Deterministic per-JIRA-component slices to narrate. Called after the
+   * taxonomy exists — the slices bucket each component's defects by the
+   * report-wide groups, so they cannot be computed before synthesis — and
+   * returns slices with `summary`, `escapeAnalysis` and `strategies` unset.
+   * Absent or throwing ⇒ no component phase at all.
+   */
+  componentSlices?: (signals: DefectSignal[], groups: DefectGroup[]) => ComponentAnalysis[];
 }
 
 export function emptyProductDefectAnalysis(totalTickets = 0, jql = ""): ProductDefectAnalysis {
@@ -1393,6 +1661,7 @@ export function emptyProductDefectAnalysis(totalTickets = 0, jql = ""): ProductD
     teamPlans: [],
     codeCorrelation: null,
     signals: [],
+    components: [],
   };
 }
 
@@ -1428,12 +1697,13 @@ async function runPool<I, O>(
 const today = () => new Date().toISOString().slice(0, 10);
 
 /**
- * Five-phase population-level defect analysis:
+ * Six-phase population-level defect analysis:
  *   1. extract    — one signal per ticket (batched, bounded parallelism).
  *   2. synthesize — the canonical two-level taxonomy + executive summary.
  *   3. deep-dive  — per group: what fails, why it escaped, root causes.
  *   4. strategies — prevention programme across all disciplines (+ metrics).
  *   5. teams      — per-team action plans, counted from the code correlation.
+ *   6. components — per-JIRA-component narrative over deterministic slices.
  *
  * Every phase degrades to an empty result on failure rather than aborting the
  * run: a 1300-ticket analysis is expensive enough that losing it to one
@@ -1847,6 +2117,76 @@ export async function analyzeProductDefects(
   );
   opts.onProgress?.({ phase: "teams", done: 1, total: 1 });
 
+  // --- Phase 6: per-component narrative -------------------------------------
+  // The slices are deterministic and belong to the caller (they need the JIRA
+  // component tags, which live on the issues), but they can only be built once
+  // the taxonomy exists — so, exactly like `correlationForGroups`, we resolve
+  // them mid-run and tolerate a callback that throws.
+  let components: ComponentAnalysis[] = [];
+  if (opts.componentSlices) {
+    let slices: ComponentAnalysis[] = [];
+    try {
+      const resolved = opts.componentSlices(signals, groups);
+      slices = Array.isArray(resolved)
+        ? resolved.filter((s): s is ComponentAnalysis => Boolean(s) && typeof s?.slug === "string")
+        : [];
+    } catch (err) {
+      console.warn(
+        "[product-defects] component slicing failed:",
+        err instanceof Error ? err.message : err,
+      );
+      slices = [];
+    }
+    if (slices.length > 0) {
+      // Progress counts COMPONENTS, not batches: the UI shows "3/9" and the
+      // reader knows exactly which of the nine drilldown pages are written.
+      opts.onProgress?.({ phase: "components", done: 0, total: slices.length });
+      const reportMetricKeys = metrics.map((m) => m.key);
+      const globalStrategyKeys = strategies.map((s) => s.key);
+      components = await runPool(
+        slices,
+        // Same ceiling as the deep dives: these are long generations and the
+        // component phase runs 9 of them.
+        Math.min(3, parallel),
+        async (slice) => {
+          const payload = componentPromptPayload(slice, signalByKey, {
+            metricKeys: reportMetricKeys,
+            reportSummary: synth.executiveSummary,
+          });
+          let raw: unknown = {};
+          try {
+            raw = await complete<unknown>({
+              model,
+              system: COMPONENT_SYSTEM,
+              user: `Today is ${today()}. Write the drilldown narrative for the "${
+                slice.component
+              }" component.\n\n${JSON.stringify(payload)}`,
+              systemCacheable: true,
+              maxTokens: 8000,
+            });
+          } catch (err) {
+            console.warn(
+              `[product-defects] component narrative for ${slice.slug} failed:`,
+              err instanceof Error ? err.message : err,
+            );
+            // Degrade to an un-narrated slice rather than dropping it: the page
+            // still renders every deterministic section, which is most of it.
+            raw = {};
+          }
+          return applyComponentNarrative(slice, raw, {
+            metricKeys: reportMetricKeys,
+            reservedStrategyKeys: globalStrategyKeys,
+          });
+        },
+        (done, total) => opts.onProgress?.({ phase: "components", done, total }),
+      );
+    }
+  } else {
+    console.warn(
+      "[product-defects] no componentSlices callback supplied; skipping the per-component phase",
+    );
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     jql,
@@ -1860,5 +2200,6 @@ export async function analyzeProductDefects(
     teamPlans,
     codeCorrelation: correlation,
     signals,
+    components,
   };
 }

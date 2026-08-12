@@ -27,6 +27,7 @@ const PHASE_LABELS: Record<ProductDefectsPhase, string> = {
   "deep-dive": "Deep-diving groups",
   strategies: "Building strategies",
   teams: "Team action plans",
+  components: "Analyzing components",
   done: "Done",
   error: "Failed",
 };

@@ -283,6 +283,26 @@ export default function SettingsPage() {
                       key) and CODEOWNERS, to find the hot files and the owning teams.
                     </p>
                   </div>
+                  <div className="space-y-1.5">
+                    <Label>Minimum defects for a component page</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={config.pdaComponentMinDefects}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          pdaComponentMinDefects: Number(e.target.value) || 1,
+                        })
+                      }
+                    />
+                    <p className="text-[11px] text-fg-subtle">
+                      A JIRA component needs at least this many defects to get its own sub-page
+                      under Product Defect Analysis. Components below the bar still count toward
+                      the overall analysis — they just don&apos;t carry enough evidence for a
+                      pattern of their own.
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">

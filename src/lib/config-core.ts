@@ -37,6 +37,7 @@ export const DEFAULTS: AppConfig = {
     'project = EAC AND issuetype in (Bug) AND "Customer[Select List (multiple choices)]" is not EMPTY and created >= -400d',
   pdaDashboard: true,
   codeRepoPath: "/Users/ricky.koo/veza/cookieai-core",
+  pdaComponentMinDefects: 25,
   sprintLengthDays: 14,
   inactivityThresholdDays: 21,
   pingThresholdDays: 7,
@@ -102,6 +103,8 @@ export function parseConfig(raw: string | null): AppConfig {
     pdaJql: parsed.pdaJql ?? DEFAULTS.pdaJql,
     pdaDashboard: parsed.pdaDashboard ?? DEFAULTS.pdaDashboard,
     codeRepoPath: parsed.codeRepoPath ?? DEFAULTS.codeRepoPath,
+    pdaComponentMinDefects:
+      parsed.pdaComponentMinDefects ?? DEFAULTS.pdaComponentMinDefects,
   };
 }
 

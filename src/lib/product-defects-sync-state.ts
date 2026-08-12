@@ -16,6 +16,7 @@ export type ProductDefectsPhase =
   | "deep-dive"
   | "strategies"
   | "teams"
+  | "components"
   | "done"
   | "error";
 

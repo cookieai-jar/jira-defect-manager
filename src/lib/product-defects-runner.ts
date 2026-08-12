@@ -13,14 +13,24 @@ import {
   analyzeProductDefects,
   emptyProductDefectAnalysis,
 } from "@/lib/product-defects-analysis";
-import { buildCodeCorrelation } from "@/lib/code-correlation-git";
-import { correlationByGroup } from "@/lib/code-correlation";
+import {
+  buildCodeCorrelation,
+  existsAtHeadFrom,
+  pathsAtHead,
+  readCodeowners,
+} from "@/lib/code-correlation-git";
+import { correlationByGroup, ownerLookup } from "@/lib/code-correlation";
+import { buildComponentAnalyses } from "@/lib/component-analysis";
 import { computeDefectMetrics } from "@/lib/defect-metrics";
 import {
   finishProductDefectsSyncState,
   setProductDefectsSyncState,
 } from "@/lib/product-defects-sync-state";
-import type { CodeCorrelation, DefectMetric } from "@/types/product-defects";
+import type {
+  CodeCorrelation,
+  DefectMetric,
+  PreventionStrategy,
+} from "@/types/product-defects";
 import type { Scope } from "@/types/triage";
 
 /**
@@ -41,6 +51,36 @@ function mergeMetrics(computed: DefectMetric[], proposed: DefectMetric[]): Defec
     if (!byKey.has(p.key)) byKey.set(p.key, { ...p, automated: false });
   }
   return [...byKey.values()];
+}
+
+
+/**
+ * Drop code paths that no longer exist at HEAD from every strategy's
+ * `codeAreas`, global and per-component.
+ *
+ * The prompts already tell the model to avoid stale paths, and hotspots carry
+ * `existsAtHead` — but that flag is only stamped on ranked hotspots, and each
+ * component ranks its OWN top-N, so most component hotspots answer "unknown"
+ * and unknown reads as "assume it exists". A single authoritative pass here is
+ * the only thing that actually guarantees it: a work item pointing at a deleted
+ * directory is worse than no work item, because someone has to go find out.
+ */
+function pruneDeadCodeAreas(
+  strategies: PreventionStrategy[],
+  exists: (path: string) => boolean | undefined,
+): { strategies: PreventionStrategy[]; dropped: string[] } {
+  const dropped: string[] = [];
+  const pruned = strategies.map((s) => {
+    const areas = (s.codeAreas ?? []).filter((p) => {
+      if (exists(p) === false) {
+        dropped.push(`${s.key}:${p}`);
+        return false;
+      }
+      return true;
+    });
+    return areas.length === (s.codeAreas ?? []).length ? s : { ...s, codeAreas: areas };
+  });
+  return { strategies: pruned, dropped };
 }
 
 /**
@@ -107,6 +147,24 @@ export async function runProductDefectSync(): Promise<void> {
       );
     }
 
+    // Per-file CODEOWNERS resolver for the component slices. A stored
+    // CodeCorrelation cannot carry a function, and without one the subset
+    // rebuild falls back to ticket-level team union — which credits every team
+    // named on a ticket with all of that ticket's files and inflates broad
+    // owners by an order of magnitude. Best-effort: no resolver just means the
+    // coarser fallback, not a failed run.
+    let owners: ((path: string) => string[]) | undefined;
+    let pathExists: (path: string) => boolean | undefined = () => undefined;
+    try {
+      owners = ownerLookup(await readCodeowners(config.codeRepoPath));
+      pathExists = existsAtHeadFrom(await pathsAtHead(config.codeRepoPath));
+    } catch (err) {
+      console.warn(
+        "[product-defects] CODEOWNERS/HEAD read failed; component team stats fall back to ticket-level attribution and dead-path pruning is skipped:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     // 3. Baseline metrics from ticket history alone — passed into the model so
     //    strategies can cite real numbers and attach to real metric keys.
     setProductDefectsSyncState({ phase: "metrics", message: "Computing defect metrics", done: 0, total: 1 });
@@ -149,6 +207,20 @@ export async function runProductDefectSync(): Promise<void> {
       // taxonomy, so the analyzer asks for it mid-run rather than up front.
       correlationForGroups: (groups) =>
         correlation ? correlationByGroup(correlation, groups) : [],
+      // Per-component slices are likewise resolved mid-run: they bucket the
+      // finished taxonomy by JIRA component, so they cannot exist until the
+      // groups do. Everything here is deterministic — the analyzer only adds
+      // the narrative and the component-scoped strategies.
+      componentSlices: (signals, groups) =>
+        buildComponentAnalyses({
+          issues,
+          signals,
+          groups,
+          correlation,
+          minDefects: config.pdaComponentMinDefects,
+          owners,
+          existsAtHead: pathExists,
+        }),
       onProgress: (event) => {
         const label: Record<typeof event.phase, string> = {
           extract: `Extracting defect signals (${event.done}/${event.total})`,
@@ -156,6 +228,7 @@ export async function runProductDefectSync(): Promise<void> {
           "deep-dive": `Deep-diving each group (${event.done}/${event.total})`,
           strategies: "Deriving prevention strategies",
           teams: "Building per-team action plans",
+          components: `Analyzing each JIRA component (${event.done}/${event.total})`,
         };
         setProductDefectsSyncState({
           phase: event.phase,
@@ -194,8 +267,27 @@ export async function runProductDefectSync(): Promise<void> {
       ? { ...correlation, byGroup: correlationByGroup(correlation, report.groups) }
       : null;
 
+    // Last gate before anything reaches a team: no action item may point at a
+    // path that no longer exists. Applied to global AND component strategies.
+    const globalPruned = pruneDeadCodeAreas(report.strategies, pathExists);
+    const componentsPruned = report.components.map((c) => {
+      const p = pruneDeadCodeAreas(c.strategies, pathExists);
+      return { pruned: { ...c, strategies: p.strategies }, dropped: p.dropped };
+    });
+    const allDropped = [
+      ...globalPruned.dropped,
+      ...componentsPruned.flatMap((c) => c.dropped),
+    ];
+    if (allDropped.length > 0) {
+      console.warn(
+        `[product-defects] dropped ${allDropped.length} strategy code path(s) that no longer exist at HEAD: ${allDropped.join(", ")}`,
+      );
+    }
+
     saveProductDefectReport({
       ...report,
+      strategies: globalPruned.strategies,
+      components: componentsPruned.map((c) => c.pruned),
       metrics: finalMetrics,
       codeCorrelation: finalCorrelation,
     });

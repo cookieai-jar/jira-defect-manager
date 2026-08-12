@@ -2,16 +2,21 @@ import { describe, it, expect } from "vitest";
 import type { JiraIssue } from "@/types/triage";
 import type {
   CodeCorrelation,
+  ComponentAnalysis,
   DefectGroup,
   DefectMetric,
   DefectSignal,
 } from "@/types/product-defects";
 import {
   analyzeProductDefects,
+  applyComponentNarrative,
   applyGroupDeepDive,
   batchIssues,
   clamp,
   compactIssue,
+  componentCodeContext,
+  componentPromptPayload,
+  componentStrategyKey,
   emptyProductDefectAnalysis,
   groupCodeContext,
   MAX_TOP_LEVEL_GROUPS,
@@ -985,6 +990,252 @@ describe("normalizeTeamPlans", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 6 — per-component narrative
+// ---------------------------------------------------------------------------
+
+function makeComponentSlice(over: Partial<ComponentAnalysis> = {}): ComponentAnalysis {
+  return {
+    component: "Lifecycle Management",
+    slug: "lifecycle-management",
+    defectCount: 3,
+    share: 60,
+    issueKeys: ["A-1", "A-2", "B-1"],
+    severityAvg: 6.5,
+    preventabilityAvg: 7.5,
+    regressionCount: 1,
+    detectionStages: [{ stage: "integration-test", count: 3 }],
+    triggers: [{ trigger: "data-scale", count: 3 }],
+    topAreas: ["Okta connector"],
+    topFailureModes: ["Pagination cursor expiry"],
+    groups: [
+      {
+        groupKey: "ingestion",
+        name: "Ingestion",
+        ticketCount: 2,
+        share: 67,
+        issueKeys: ["A-1", "A-2"],
+        detectionStages: [{ stage: "integration-test", count: 2 }],
+        triggers: [{ trigger: "data-scale", count: 2 }],
+      },
+    ],
+    summary: "",
+    escapeAnalysis: "",
+    strategies: [],
+    metrics: [],
+    codeCorrelation: makeCorrelation(),
+    teams: makeCorrelation().byTeam,
+    ...over,
+  };
+}
+
+describe("componentStrategyKey", () => {
+  it("namespaces by component slug so a component key cannot shadow a global one", () => {
+    expect(componentStrategyKey("lifecycle-management", "multi-page-fixtures")).toBe(
+      "comp-lifecycle-management-multi-page-fixtures",
+    );
+    // Both halves are slugified, so a model-written key with spaces or capitals
+    // still lands in the same namespace.
+    expect(componentStrategyKey("Access Review", "Fix The Thing")).toBe(
+      "comp-access-review-fix-the-thing",
+    );
+  });
+});
+
+describe("componentCodeContext", () => {
+  it("demotes and flags paths that no longer exist at HEAD, exactly like the deep dive", () => {
+    const ctx = componentCodeContext(makeComponentSlice())!;
+    expect(ctx.teams).toEqual(["@x/integrations", "@x/graph"]);
+    expect(ctx.areaHotspots.map((h) => h.path)).toEqual([
+      "connectors/okta",
+      "controlp/internal/lifecycle_management",
+    ]);
+    expect(ctx.areaHotspots[1].existsAtHead).toBe(false);
+    expect(ctx.hasStalePaths).toBe(true);
+  });
+
+  it("is null when the component has neither teams nor hotspots", () => {
+    expect(componentCodeContext(makeComponentSlice({ codeCorrelation: null, teams: [] }))).toBeNull();
+  });
+});
+
+describe("componentPromptPayload", () => {
+  it("carries the component's own stats, group slices, metric keys and a bounded sample", () => {
+    const signals = new Map(
+      [
+        makeSignal("A-1", { severityScore: 3 }),
+        makeSignal("A-2", { severityScore: 9 }),
+      ].map((s) => [s.issueKey, s]),
+    );
+    const payload = componentPromptPayload(makeComponentSlice(), signals, {
+      metricKeys: ["escape-rate"],
+      reportSummary: "R".repeat(2000),
+    });
+    expect(payload.component.name).toBe("Lifecycle Management");
+    expect(payload.component.defectCount).toBe(3);
+    expect(payload.groups.map((g) => g.groupKey)).toEqual(["ingestion"]);
+    expect(payload.metricKeys).toEqual(["escape-rate"]);
+    // The report-wide summary is supplied (so the model can say something else)
+    // but clamped — it is context, not the payload.
+    expect(payload.reportWideSummary).toHaveLength(600);
+    // Samples: only signals we actually have, most severe first, B-1 absent.
+    expect(payload.samples.map((s) => s.key)).toEqual(["A-2", "A-1"]);
+    expect(payload.codeContext?.teams).toContain("@x/integrations");
+  });
+
+  it("caps the sample at 20 signals", () => {
+    const many = Array.from({ length: 40 }, (_, i) => makeSignal(`M-${i}`));
+    const payload = componentPromptPayload(
+      makeComponentSlice({ issueKeys: many.map((s) => s.issueKey), defectCount: 40 }),
+      new Map(many.map((s) => [s.issueKey, s])),
+    );
+    expect(payload.samples).toHaveLength(20);
+  });
+});
+
+describe("applyComponentNarrative", () => {
+  it("attaches narrative and namespaced strategies, filtering group and metric keys", () => {
+    const out = applyComponentNarrative(
+      makeComponentSlice(),
+      {
+        summary: "Provisioning retries re-send the whole batch after a partial 207.",
+        escapeAnalysis: "No fixture returns a partial-success 207 from the SCIM endpoint.",
+        strategies: [
+          {
+            key: "partial-207-fixture",
+            title: "Add a partial-success SCIM fixture",
+            detail: "d",
+            discipline: "integration-test",
+            team: "@x/integrations",
+            groupKeys: ["ingestion", "not-in-this-component"],
+            effort: "low",
+            priority: "now",
+            expectedImpact: "i",
+            metricKeys: ["escape-rate", "not-a-metric"],
+            codeAreas: ["connectors/okta", "controlp/internal/lifecycle_management"],
+          },
+          // Cites only a group this component does not have → ungrounded, dropped.
+          { title: "Ghost work", groupKeys: ["nope-1", "nope-2"] },
+          { title: "" }, // no title → dropped
+        ],
+      },
+      { metricKeys: ["escape-rate"] },
+    );
+
+    expect(out.summary).toMatch(/partial 207/);
+    expect(out.escapeAnalysis).toMatch(/SCIM endpoint/);
+    expect(out.strategies).toHaveLength(1);
+    const s = out.strategies[0];
+    expect(s.key).toBe("comp-lifecycle-management-partial-207-fixture");
+    expect(s.groupKeys).toEqual(["ingestion"]); // foreign group key stripped
+    expect(s.metricKeys).toEqual(["escape-rate"]); // unknown metric stripped
+    expect(s.discipline).toBe("integration-test");
+    expect(s.priority).toBe("now");
+    // The stale hotspot is removed from codeAreas — no action item aimed at a
+    // directory that no longer exists.
+    expect(s.codeAreas).toEqual(["connectors/okta"]);
+  });
+
+  it("defaults the team to the component's largest owning team", () => {
+    const out = applyComponentNarrative(makeComponentSlice(), {
+      strategies: [{ title: "Something", team: "" }],
+    });
+    expect(out.strategies[0].team).toBe("@x/integrations");
+    // With no correlation at all it falls back to the generic owner.
+    const orphan = applyComponentNarrative(
+      makeComponentSlice({ teams: [], codeCorrelation: null }),
+      { strategies: [{ title: "Something" }] },
+    );
+    expect(orphan.strategies[0].team).toBe("Engineering");
+  });
+
+  it("cannot collide with a global strategy key, or with a sibling in the same component", () => {
+    const out = applyComponentNarrative(
+      makeComponentSlice(),
+      {
+        strategies: [
+          { key: "fixtures", title: "First" },
+          { key: "fixtures", title: "Second" },
+        ],
+      },
+      {
+        // A global strategy already occupies the namespaced key — vanishingly
+        // unlikely, but the report links strategies by key, so "unlikely" is
+        // not good enough.
+        reservedStrategyKeys: ["comp-lifecycle-management-fixtures"],
+      },
+    );
+    expect(out.strategies.map((s) => s.key)).toEqual([
+      "comp-lifecycle-management-fixtures-2",
+      "comp-lifecycle-management-fixtures-3",
+    ]);
+  });
+
+  it("ignores a hostile response that tries to rewrite the deterministic fields", () => {
+    const slice = makeComponentSlice();
+    const out = applyComponentNarrative(slice, {
+      summary: "s",
+      defectCount: 9999,
+      share: 100,
+      issueKeys: ["MADE-UP-1"],
+      severityAvg: 10,
+      regressionCount: 42,
+      detectionStages: [{ stage: "not-preventable", count: 999 }],
+      groups: [{ groupKey: "invented", name: "Invented", ticketCount: 500 }],
+      metrics: [{ key: "made-up" }],
+      teams: [{ team: "@x/nobody" }],
+      codeCorrelation: null,
+    });
+    expect(out.defectCount).toBe(3);
+    expect(out.share).toBe(60);
+    expect(out.issueKeys).toEqual(slice.issueKeys);
+    expect(out.severityAvg).toBe(6.5);
+    expect(out.regressionCount).toBe(1);
+    expect(out.detectionStages).toEqual(slice.detectionStages);
+    expect(out.groups).toEqual(slice.groups);
+    expect(out.metrics).toEqual([]);
+    expect(out.teams).toEqual(slice.teams);
+    expect(out.codeCorrelation).toEqual(slice.codeCorrelation);
+    expect(out.component).toBe("Lifecycle Management");
+  });
+
+  it("clamps the word budgets in the same proportion as the global fields", () => {
+    const out = applyComponentNarrative(makeComponentSlice(), {
+      summary: "w ".repeat(2000),
+      escapeAnalysis: "w ".repeat(2000),
+      strategies: [{ title: "T".repeat(400), detail: "d".repeat(2000), expectedImpact: "e".repeat(900) }],
+    });
+    expect(out.summary).toHaveLength(840); // 90 words
+    expect(out.escapeAnalysis).toHaveLength(560); // 60 words
+    expect(out.strategies[0].detail).toHaveLength(600); // same as a global strategy
+    expect(out.strategies[0].title).toHaveLength(200);
+    expect(out.strategies[0].expectedImpact).toHaveLength(400);
+  });
+
+  it("keeps at most 4 strategies, highest priority first", () => {
+    const out = applyComponentNarrative(makeComponentSlice(), {
+      strategies: [
+        { title: "Later A", priority: "later" },
+        { title: "Next A", priority: "next" },
+        { title: "Now A", priority: "now" },
+        { title: "Now B", priority: "now" },
+        { title: "Later B", priority: "later" },
+        { title: "Next B", priority: "next" },
+      ],
+    });
+    expect(out.strategies.map((s) => s.title)).toEqual(["Now A", "Now B", "Next A", "Next B"]);
+  });
+
+  it("degrades to empty narrative fields on a null/garbage response", () => {
+    const out = applyComponentNarrative(makeComponentSlice(), null);
+    expect(out.summary).toBe("");
+    expect(out.escapeAnalysis).toBe("");
+    expect(out.strategies).toEqual([]);
+    expect(out.defectCount).toBe(3);
+    expect(out.groups).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // emptyProductDefectAnalysis
 // ---------------------------------------------------------------------------
 
@@ -1000,6 +1251,7 @@ describe("emptyProductDefectAnalysis", () => {
     expect(zero.metrics).toEqual([]);
     expect(zero.teamPlans).toEqual([]);
     expect(zero.signals).toEqual([]);
+    expect(zero.components).toEqual([]);
     expect(zero.codeCorrelation).toBeNull();
     expect(emptyProductDefectAnalysis(5).executiveSummary).toMatch(/No analyzable signal/);
     expect(emptyProductDefectAnalysis().jql).toBe("");
@@ -1018,6 +1270,7 @@ function phaseOf(system: string): string {
   if (system.includes("deep-dive section")) return "deep-dive";
   if (system.includes("PREVENTION PROGRAMME")) return "strategies";
   if (system.includes("per-team section")) return "teams";
+  if (system.includes("drilldown page for ONE JIRA COMPONENT")) return "components";
   return "unknown";
 }
 
@@ -1120,6 +1373,28 @@ function stubComplete(log?: string[], users?: Record<string, string>): Completio
             metricKeys: ["escape-rate"],
           },
         ] as Any_;
+      case "components":
+        return {
+          summary: "Provisioning retries re-send the whole batch after a partial 207.",
+          escapeAnalysis: "No fixture returns a partial-success 207 from the SCIM endpoint.",
+          strategies: [
+            {
+              // Deliberately the same bare key the global phase used — it must
+              // end up namespaced, not shadowing the global strategy.
+              key: "multi-page-fixtures",
+              title: "Add a partial-success SCIM fixture",
+              discipline: "integration-test",
+              team: "@x/integrations",
+              groupKeys: ["data-ingestion-correctness"],
+              priority: "now",
+              metricKeys: ["escape-rate", "not-a-metric"],
+              codeAreas: ["connectors/okta", "controlp/internal/lifecycle_management"],
+            },
+            { title: "Ungrounded", groupKeys: ["a-group-this-component-lacks"] },
+          ],
+          // Hostile extras the normalizer must ignore.
+          defectCount: 9999,
+        } as Any_;
       default:
         return {} as Any_;
     }
@@ -1484,5 +1759,190 @@ describe("analyzeProductDefects (orchestration with an injected LLM)", () => {
     });
     expect(out.groups).toHaveLength(1);
     expect(out.groups[0].analysis).toMatch(/cursor is committed/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 6 — components
+  // -------------------------------------------------------------------------
+
+  /** Two component slices whose group keys match the stub taxonomy. */
+  function stubSlices(): ComponentAnalysis[] {
+    return ["Integrations", "Lifecycle Management"].map((name, i) =>
+      makeComponentSlice({
+        component: name,
+        slug: name.toLowerCase().replace(/\s+/g, "-"),
+        defectCount: 2 - i,
+        issueKeys: ["EAC-0", "EAC-1"].slice(0, 2 - i),
+        groups: [
+          {
+            groupKey: "data-ingestion-correctness",
+            name: "Data ingestion correctness",
+            ticketCount: 2 - i,
+            share: 100,
+            issueKeys: ["EAC-0", "EAC-1"].slice(0, 2 - i),
+            detectionStages: [{ stage: "integration-test", count: 2 - i }],
+            triggers: [{ trigger: "data-scale", count: 2 - i }],
+          },
+        ],
+      }),
+    );
+  }
+
+  it("makes one model call per component and narrates each deterministic slice", async () => {
+    const issues = [makeIssue("EAC-0"), makeIssue("EAC-1")];
+    const phases: string[] = [];
+    const componentProgress: Array<{ done: number; total: number }> = [];
+    let sawSignals: string[] = [];
+    let sawGroups: string[] = [];
+
+    const out = await analyzeProductDefects(issues, {
+      complete: stubComplete(phases),
+      batchSize: 2,
+      metrics: [ESCAPE_RATE],
+      componentSlices: (signals, groups) => {
+        sawSignals = signals.map((s) => s.issueKey);
+        sawGroups = groups.map((g) => g.key);
+        return stubSlices();
+      },
+      onProgress: (e) => {
+        if (e.phase === "components") componentProgress.push({ done: e.done, total: e.total });
+      },
+    });
+
+    // One call per component — nine components would add nine calls.
+    expect(phases.filter((p) => p === "components")).toHaveLength(2);
+    // Resolved AFTER the taxonomy exists, with the merged signals and the
+    // normalized groups (not the model's raw synthesis).
+    expect(sawSignals).toEqual(["EAC-0", "EAC-1"]);
+    expect(sawGroups).toEqual(["data-ingestion-correctness"]);
+    // Progress counts components, not batches.
+    expect(componentProgress).toEqual([
+      { done: 0, total: 2 },
+      { done: 1, total: 2 },
+      { done: 2, total: 2 },
+    ]);
+
+    expect(out.components).toHaveLength(2);
+    // Order is the deterministic module's, preserved through the pool.
+    expect(out.components.map((c) => c.component)).toEqual(["Integrations", "Lifecycle Management"]);
+    const c = out.components[0];
+    expect(c.summary).toMatch(/partial 207/);
+    expect(c.escapeAnalysis).toMatch(/SCIM endpoint/);
+    // The ungrounded strategy is dropped; the survivor is namespaced by slug so
+    // it cannot be mistaken for — or collide with — the global one of the same
+    // bare key.
+    expect(c.strategies).toHaveLength(1);
+    expect(c.strategies[0].key).toBe("comp-integrations-multi-page-fixtures");
+    expect(out.strategies[0].key).toBe("multi-page-fixtures");
+    expect(c.strategies[0].groupKeys).toEqual(["data-ingestion-correctness"]);
+    // Metric keys are filtered against the report's real metric set.
+    expect(c.strategies[0].metricKeys).toEqual(["escape-rate"]);
+    // The stale hotspot never reaches an action item.
+    expect(c.strategies[0].codeAreas).toEqual(["connectors/okta"]);
+    // Deterministic fields survive the model's attempt to rewrite them.
+    expect(c.defectCount).toBe(2);
+    expect(c.issueKeys).toEqual(["EAC-0", "EAC-1"]);
+    expect(c.groups[0].ticketCount).toBe(2);
+  });
+
+  it("keeps a failed component's deterministic fields with an empty narrative", async () => {
+    const issues = [makeIssue("EAC-0"), makeIssue("EAC-1")];
+    const inner = stubComplete();
+    const complete: CompletionFn = (async (opts: CompleteOpts) => {
+      if (phaseOf(opts.system) === "components" && opts.user.includes("Integrations")) {
+        throw new Error("overloaded");
+      }
+      return inner(opts);
+    }) as CompletionFn;
+
+    const out = await analyzeProductDefects(issues, {
+      complete,
+      batchSize: 2,
+      componentSlices: () => stubSlices(),
+    });
+
+    // The slice is kept, not dropped — the page still renders every
+    // deterministic section, which is most of it.
+    expect(out.components).toHaveLength(2);
+    const failed = out.components[0];
+    expect(failed.component).toBe("Integrations");
+    expect(failed.summary).toBe("");
+    expect(failed.escapeAnalysis).toBe("");
+    expect(failed.strategies).toEqual([]);
+    expect(failed.defectCount).toBe(2);
+    expect(failed.detectionStages).toEqual([{ stage: "integration-test", count: 3 }]);
+    expect(failed.groups[0].groupKey).toBe("data-ingestion-correctness");
+    // Its neighbour is unaffected.
+    expect(out.components[1].summary).toMatch(/partial 207/);
+  });
+
+  it("holds at most 3 component calls in flight regardless of the extraction parallelism", async () => {
+    const issues = [makeIssue("EAC-0")];
+    const inner = stubComplete();
+    let inFlight = 0;
+    let peak = 0;
+    const complete: CompletionFn = (async (opts: CompleteOpts) => {
+      if (phaseOf(opts.system) !== "components") return inner(opts);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      inFlight--;
+      return inner(opts);
+    }) as CompletionFn;
+
+    const out = await analyzeProductDefects(issues, {
+      complete,
+      parallel: 8,
+      componentSlices: () =>
+        Array.from({ length: 7 }, (_, i) =>
+          makeComponentSlice({ component: `C${i}`, slug: `c-${i}` }),
+        ),
+    });
+    expect(out.components).toHaveLength(7);
+    expect(peak).toBe(3);
+  });
+
+  it("yields no components and no component progress when the callback is absent", async () => {
+    const issues = [makeIssue("EAC-0")];
+    const phases: string[] = [];
+    const progress: string[] = [];
+    const out = await analyzeProductDefects(issues, {
+      complete: stubComplete(phases),
+      onProgress: (e) => progress.push(e.phase),
+    });
+    expect(out.components).toEqual([]);
+    expect(phases).not.toContain("components");
+    expect(progress).not.toContain("components");
+    // The rest of the report is unaffected.
+    expect(out.groups).toHaveLength(1);
+    expect(out.strategies).toHaveLength(1);
+  });
+
+  it("survives a throwing componentSlices callback, and a callback with nothing to narrate", async () => {
+    const issues = [makeIssue("EAC-0")];
+    const phases: string[] = [];
+    const progress: string[] = [];
+    const thrown = await analyzeProductDefects(issues, {
+      complete: stubComplete(phases),
+      componentSlices: () => {
+        throw new Error("component slicing exploded");
+      },
+      onProgress: (e) => progress.push(e.phase),
+    });
+    expect(thrown.components).toEqual([]);
+    expect(phases).not.toContain("components");
+    expect(progress).not.toContain("components");
+    // Everything the run already paid for is still returned.
+    expect(thrown.groups).toHaveLength(1);
+    expect(thrown.teamPlans).toEqual([]);
+
+    const empty = await analyzeProductDefects(issues, {
+      complete: stubComplete(),
+      // Below the minimum defect count, nothing qualified.
+      componentSlices: () => [],
+      onProgress: (e) => progress.push(e.phase),
+    });
+    expect(empty.components).toEqual([]);
+    expect(progress).not.toContain("components");
   });
 });

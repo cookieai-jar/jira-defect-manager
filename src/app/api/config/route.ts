@@ -21,6 +21,7 @@ const PatchSchema = z.object({
   pdaJql: z.string().min(1).optional(),
   pdaDashboard: z.boolean().optional(),
   codeRepoPath: z.string().min(1).optional(),
+  pdaComponentMinDefects: z.number().int().min(1).max(1000).optional(),
   sprintLengthDays: z.number().int().min(1).max(60).optional(),
   inactivityThresholdDays: z.number().int().min(1).max(365).optional(),
   pingThresholdDays: z.number().int().min(1).max(60).optional(),
