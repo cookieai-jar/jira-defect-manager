@@ -17,14 +17,23 @@ interface Props {
 export function TicketDrawer({ issueKey, onClose }: Props) {
   const [data, setData] = useState<{ issue: JiraIssue; analysis: TicketAnalysis | null } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!issueKey) return;
     setLoading(true);
     setData(null);
+    setError(null);
     fetch(`/api/issues/${issueKey}`)
-      .then((r) => r.json())
+      // A miss returns `{ error }`, not an issue. Without the ok-check the
+      // render below dereferences `data.issue.summary` and takes the whole
+      // page down with a TypeError.
+      .then(async (r) => {
+        if (!r.ok) throw new Error(r.status === 404 ? "Ticket not cached locally" : `Load failed (${r.status})`);
+        return r.json();
+      })
       .then((d) => setData(d))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Load failed"))
       .finally(() => setLoading(false));
   }, [issueKey]);
 
@@ -64,7 +73,7 @@ export function TicketDrawer({ issueKey, onClose }: Props) {
               <Loader2 className="h-4 w-4 animate-spin" /> Loading…
             </div>
           ) : !data ? (
-            <div className="p-6 text-sm text-fg-muted">Not found.</div>
+            <div className="p-6 text-sm text-fg-muted">{error ?? "Not found."}</div>
           ) : (
             <div className="p-5 space-y-5">
               <div>
