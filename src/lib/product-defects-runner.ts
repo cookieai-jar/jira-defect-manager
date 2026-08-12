@@ -4,7 +4,7 @@ import {
   replaceProductDefectIssues,
   saveProductDefectReport,
   saveProductDefectSignals,
-  listFreshProductDefectSignals,
+  listProductDefectSignals,
   recordProductDefectMetricPoints,
   recordSyncStart,
   recordSyncFinish,
@@ -119,10 +119,19 @@ export async function runProductDefectSync(): Promise<void> {
     //    model time), so it resumes from whatever was checkpointed on a prior
     //    run and checkpoints each batch as it lands. An interruption then costs
     //    one batch, not the whole phase.
-    const cachedSignals = listFreshProductDefectSignals();
+    //
+    //    A signal is only reusable if the ticket it was taken from has not
+    //    changed in JIRA since. Comparing against our own synced_at cannot work
+    //    — replaceProductDefectIssues above re-stamps it every run, which would
+    //    invalidate the whole cache every time and make the checkpoint
+    //    write-only.
+    const updatedByKey = new Map(issues.map((i) => [i.key, i.updated]));
+    const cachedSignals = listProductDefectSignals()
+      .filter((c) => c.issueUpdated != null && updatedByKey.get(c.signal.issueKey) === c.issueUpdated)
+      .map((c) => c.signal);
     if (cachedSignals.length > 0) {
       setProductDefectsSyncState({
-        message: `Resuming: ${cachedSignals.length} signals already extracted`,
+        message: `Resuming: ${cachedSignals.length} of ${issues.length} signals reused from cache`,
       });
     }
     const report = await analyzeProductDefects(issues, {
@@ -131,7 +140,7 @@ export async function runProductDefectSync(): Promise<void> {
       correlation,
       metrics: baseMetrics,
       cachedSignals,
-      onSignalsBatch: (batch) => saveProductDefectSignals(batch),
+      onSignalsBatch: (batch) => saveProductDefectSignals(batch, updatedByKey),
       // Extraction is I/O-bound on the API and the SDK already retries 429/529
       // with backoff, so the default of 3 leaves the run an order of magnitude
       // slower than it needs to be — 162 batches took over two hours.

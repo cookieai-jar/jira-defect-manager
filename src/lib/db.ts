@@ -130,10 +130,17 @@ export function db(): DatabaseSync {
     -- ~1300 defects costs over two hours of model time, and the report is only
     -- written at the end of the pipeline — so without this, any interruption
     -- throws all of it away. Signals are keyed by issue key and reused on the
-    -- next run; the issue row's synced_at is what invalidates them.
+    -- next run.
+    --
+    -- issue_updated is the ticket's JIRA updated value AT EXTRACTION TIME, and
+    -- it is what invalidates a signal: the ticket's own content changing is the
+    -- only thing that makes a signal stale. Our synced_at cannot serve here —
+    -- every run re-pulls the population and re-stamps it, so a fetch-time
+    -- comparison would invalidate the entire cache on every run.
     CREATE TABLE IF NOT EXISTS product_defect_signals (
       issue_key TEXT PRIMARY KEY,
       data TEXT NOT NULL,
+      issue_updated TEXT,
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -191,6 +198,14 @@ export function db(): DatabaseSync {
     if (tableExists(conn, table) && !hasColumn(conn, table, "scope")) {
       conn.exec(`ALTER TABLE ${table} ADD COLUMN scope TEXT NOT NULL DEFAULT 'eac'`);
     }
+  }
+  // Migrate: signals recorded before invalidation keyed off the ticket's own
+  // `updated`. A null there reads as "unknown provenance" and is re-extracted.
+  if (
+    tableExists(conn, "product_defect_signals") &&
+    !hasColumn(conn, "product_defect_signals", "issue_updated")
+  ) {
+    conn.exec(`ALTER TABLE product_defect_signals ADD COLUMN issue_updated TEXT`);
   }
   // Helpful indices
   conn.exec(`
@@ -538,17 +553,26 @@ export function latestProductDefectReport(): ProductDefectAnalysis | null {
  * extraction batch so an interrupted run resumes instead of re-paying for
  * work already done.
  */
-export function saveProductDefectSignals(signals: DefectSignal[]): void {
+export function saveProductDefectSignals(
+  signals: DefectSignal[],
+  /** issueKey -> the ticket's JIRA `updated` at the time it was extracted. */
+  updatedByKey: Map<string, string>,
+): void {
   if (signals.length === 0) return;
   const conn = db();
   const stmt = conn.prepare(
-    `INSERT INTO product_defect_signals (issue_key, data, generated_at)
-     VALUES (?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(issue_key) DO UPDATE SET data = excluded.data, generated_at = CURRENT_TIMESTAMP`,
+    `INSERT INTO product_defect_signals (issue_key, data, issue_updated, generated_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(issue_key) DO UPDATE SET
+       data = excluded.data,
+       issue_updated = excluded.issue_updated,
+       generated_at = CURRENT_TIMESTAMP`,
   );
   conn.exec("BEGIN");
   try {
-    for (const s of signals) stmt.run(s.issueKey, JSON.stringify(s));
+    for (const s of signals) {
+      stmt.run(s.issueKey, JSON.stringify(s), updatedByKey.get(s.issueKey) ?? null);
+    }
     conn.exec("COMMIT");
   } catch (e) {
     conn.exec("ROLLBACK");
@@ -557,19 +581,22 @@ export function saveProductDefectSignals(signals: DefectSignal[]): void {
 }
 
 /**
- * Cached signals that are still trustworthy: the ticket must still be in the
- * current population AND not have been re-synced since the signal was taken.
- * A ticket that changed in JIRA gets re-extracted rather than analyzed stale.
+ * Every checkpointed signal with the ticket `updated` it was extracted from.
+ * Callers decide freshness by comparing against the live population — a signal
+ * whose ticket has changed in JIRA since, or that predates this column, is
+ * re-extracted rather than analyzed stale.
  */
-export function listFreshProductDefectSignals(): DefectSignal[] {
+export function listProductDefectSignals(): Array<{
+  signal: DefectSignal;
+  issueUpdated: string | null;
+}> {
   const rows = db()
-    .prepare(
-      `SELECT s.data FROM product_defect_signals s
-       JOIN product_defect_issues i ON i.key = s.issue_key
-       WHERE s.generated_at >= i.synced_at`,
-    )
-    .all() as { data: string }[];
-  return rows.map((r) => JSON.parse(r.data) as DefectSignal);
+    .prepare(`SELECT data, issue_updated FROM product_defect_signals`)
+    .all() as { data: string; issue_updated: string | null }[];
+  return rows.map((r) => ({
+    signal: JSON.parse(r.data) as DefectSignal,
+    issueUpdated: r.issue_updated,
+  }));
 }
 
 /** Drop every checkpointed signal — forces a full re-extraction on the next run. */

@@ -751,7 +751,7 @@ export function normalizeSynthesis(
   }
 
   return {
-    executiveSummary: cleanStr(r.executiveSummary, 6000),
+    executiveSummary: cleanStr(r.executiveSummary, 1400),
     groups,
   };
 }
@@ -901,8 +901,8 @@ export function applyGroupDeepDive(group: DefectGroup, raw: unknown): DefectGrou
 
   return {
     ...group,
-    analysis: cleanStr(r.analysis, 6000),
-    escapeAnalysis: cleanStr(r.escapeAnalysis, 4000),
+    analysis: cleanStr(r.analysis, 1100),
+    escapeAnalysis: cleanStr(r.escapeAnalysis, 750),
     rootCauses: normalizeRootCauses(r.rootCauses, ownKeys),
     subGroups: group.subGroups.map((sg) => {
       const n = subNarrative.get(normLabel(sg.key)) ?? subNarrative.get(normLabel(sg.name));
@@ -1023,13 +1023,13 @@ export function normalizeStrategyPhase(
     strategies.push({
       key: uniqueKey(slugify(cleanStr(s?.key, 80) || title), usedStrategyKeys),
       title,
-      detail: cleanStr(s?.detail, 2500),
+      detail: cleanStr(s?.detail, 600),
       discipline: oneOf<PreventionDiscipline>(s?.discipline, PREVENTION_DISCIPLINES, "process"),
       team: cleanStr(s?.team, 120) || "Engineering",
       groupKeys: groupKeys.slice(0, 8),
       effort: oneOf<Effort>(s?.effort, EFFORTS, "medium"),
       priority: oneOf<ActionPriority>(s?.priority, ACTION_PRIORITIES, "next"),
-      expectedImpact: cleanStr(s?.expectedImpact, 1500),
+      expectedImpact: cleanStr(s?.expectedImpact, 400),
       metricKeys: uniq(toStringArray(s?.metricKeys, 80).filter((k) => knownMetricKeys.has(k))).slice(
         0,
         6,
@@ -1153,7 +1153,7 @@ export function normalizeTeamPlans(
       issueKeys: keys,
       topGroups,
       topAreas,
-      summary: cleanStr(model?.summary, 2500),
+      summary: cleanStr(model?.summary, 650),
       strategyKeys: uniq(
         toStringArray(model?.strategyKeys, 80).filter((k) => validStrategyKeys.has(k)),
       ).slice(0, 8),
@@ -1237,7 +1237,7 @@ Taxonomy rules:
 - Group names should be concrete and mechanism-flavoured ("Incremental sync correctness", "Credential & token lifecycle", "Large-tenant scale limits", "Upgrade & migration ordering") — not organizational ("Backend bugs") and not vague ("Miscellaneous").
 
 Output ONE JSON object:
-- executiveSummary: 3-5 markdown paragraphs for engineering leadership. Lead with the dominant escape pattern (which gates are missing, per the detection-stage distributions), then the biggest groups by name and what they have in common, then the highest-leverage prevention themes, then what the regression rate and preventability averages say about us. Write it as an engineer who has read the evidence, not as a status report.
+- executiveSummary: markdown, AT MOST 150 WORDS, for engineering leadership. Structure it as one 2-sentence lead naming the dominant escape pattern, then 3-4 single-line bullets: the biggest groups and the mechanism they share, the highest-leverage prevention theme, and what the regression/preventability numbers say. Ruthlessly concise — every sentence must carry a fact a reader would act on. No preamble, no restating the brief, no listing evidence the sections below already carry. If you find yourself writing a clause that only sets up the next one, delete it.
 - groups: array. Each:
    * name: canonical group name.
    * description: 1-3 sentences on what belongs in this group and what mechanism it concerns.
@@ -1279,8 +1279,8 @@ STALE PATHS: hotspots are derived from ~400 days of git history, so some no long
 A \`detectionStage\` of "unclassified" means extraction failed to judge that ticket — it is missing data, NOT a finding. Exclude it from your reasoning about which gate is weakest, and if it dominates the distribution, say the sample is too thin to conclude rather than inventing a gap.
 
 Produce ONE JSON object:
-- analysis: markdown, 3-6 paragraphs. WHAT fails, HOW it fails mechanically, and WHY the design permits it. Walk the actual failure path (request → pagination → transform → persist, or credential issue → cache → refresh → concurrent use). When code context is supplied, NAME the real directories/files and tie them to the failure. Distinguish the sub-groups from each other rather than blurring them together. Quantify with the statistics you were given where it sharpens the point.
-- escapeAnalysis: markdown, 2-4 paragraphs. WHY OUR GATES MISSED THIS CLASS. Use the detection-stage distribution as your spine: if most tickets should have been caught at integration-test, say exactly what those integration tests do not cover today (which fixtures, which tenant shapes, which API behaviours) and why that gap exists. Call out the structural reason — e.g. "our connector fixtures are recorded from a single small sandbox tenant, so no test ever crosses a page boundary". If a meaningful slice is genuinely not preventable, say so and quantify it rather than padding.
+- analysis: markdown, AT MOST 120 WORDS. WHAT fails, HOW it fails mechanically, and WHY the design permits it. Name the real failure path and the real directories/files from the code context. Cite at most 3 ticket keys as evidence — the drilldown carries the rest. Prefer one dense paragraph or 3-4 tight bullets over prose. Do not restate the group's statistics back to the reader; they are rendered next to this text. Do not narrate what you are about to say.
+- escapeAnalysis: markdown, AT MOST 80 WORDS. WHY OUR GATES MISSED THIS CLASS, using the detection-stage distribution as the spine: name exactly what today's tests do not cover (which fixtures, tenant shapes, API behaviours) and the structural reason — e.g. "connector fixtures are recorded from a small sandbox tenant, so no test crosses a page boundary". One or two sentences plus at most two examples. Do not repeat the mechanism already covered in the analysis field; this one answers only why it escaped.
 - rootCauses: array of 2-5. Each:
    * title: short, mechanism-named ("Cursor persisted before page commit").
    * explanation: markdown, 2-4 sentences on the underlying cause and why it recurs.
@@ -1306,7 +1306,7 @@ Produce ONE JSON object:
 - strategies: array of 10-18 concrete prevention actions. COVER ALL EIGHT disciplines — ${PREVENTION_DISCIPLINES.join(", ")} — with at least one strategy each, and weight the number of strategies per discipline by where the detection-stage distribution says the gaps actually are. Each strategy:
    * key: short kebab-case identifier.
    * title: imperative and specific ("Record connector fixtures from a multi-page tenant and assert cursor resumption").
-   * detail: markdown, 2-5 sentences. Exactly WHAT to build or change, WHERE (name real directories/files from the code areas when they apply), and WHY it closes the specific gap named in the escape analysis. An engineer should be able to open a ticket from this.
+   * detail: markdown, AT MOST 55 WORDS. Exactly WHAT to build or change, WHERE (name real directories/files from the code areas when they apply), and WHY it closes the specific gap. An engineer should be able to open a ticket from this — so keep the specifics and cut the justification prose.
    * discipline: EXACTLY one of ${PREVENTION_DISCIPLINES.join(" | ")}.
    * team: the owning team. STRONGLY prefer one of the CODEOWNERS team slugs you were given, verbatim. Only use an engineering function name ("Quality Engineering", "Platform", "Release Engineering") when no supplied team owns this work.
    * groupKeys: array of the defect group keys this addresses, using the EXACT keys given. Empty only for genuinely cross-cutting work.
@@ -1332,7 +1332,7 @@ CRITICAL — do NOT invent or restate counts, percentages or ticket keys. Every 
 Produce ONE JSON array, one object per team you were given:
 - team: the team slug EXACTLY as given.
 - label: a short human label for the team.
-- summary: markdown, 2-4 paragraphs written TO that team. What their defect profile actually says about their code: which mechanisms keep failing, which gate keeps missing them, and what is distinctive about them versus the rest of engineering (e.g. a low test-change rate on fixes, a concentration in one trigger, a high regression count). Then the one or two changes that would move their numbers most. Be direct and specific; no encouragement filler.
+- summary: markdown, AT MOST 70 WORDS written TO that team. Two or three sentences: which mechanism keeps failing and which gate keeps missing it, what is distinctive about them versus the rest of engineering (low test-change rate on fixes, concentration in one trigger, high regression count), and the single change that would move their numbers most. Their counts and assigned actions are rendered around this text — do not restate them. No encouragement filler, no preamble.
 - strategyKeys: the keys of the strategies this team should own or contribute to, drawn EXACTLY from the strategy list.
 - metricKeys: the metric keys this team should watch, drawn EXACTLY from the supplied keys.
 
