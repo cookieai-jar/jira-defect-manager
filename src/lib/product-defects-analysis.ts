@@ -1643,6 +1643,64 @@ export interface AnalyzeOptions {
    * Absent or throwing ⇒ no component phase at all.
    */
   componentSlices?: (signals: DefectSignal[], groups: DefectGroup[]) => ComponentAnalysis[];
+  /**
+   * The previous report's taxonomy. Synthesis re-derives group names from
+   * scratch every run, and the model rewords freely — measured on identical
+   * data 11 minutes apart, 92% of tickets changed group KEY purely through
+   * renames ("Ingestion & extraction correctness" → "Extraction ingestion
+   * correctness"). Seeding the prior taxonomy into the prompt plus the
+   * deterministic reconciliation in `reconcileGroupKeys` keeps keys stable
+   * across runs, which is what makes any cross-run comparison (trends,
+   * strategy follow-through, metric keys like `group-…`) meaningful.
+   */
+  priorGroups?: Array<{ key: string; name: string; description?: string; issueKeys: string[] }>;
+}
+
+/**
+ * Deterministically adopt the prior report's key + name for any new group that
+ * is evidently the same population: Jaccard overlap of issueKeys ≥ 0.5, matched
+ * greedily best-first so a split group keeps the old identity on its larger
+ * half. Prompt seeding makes the model cooperate most of the time; this is the
+ * guarantee for when it doesn't. Genuinely new groups keep their new identity.
+ */
+export function reconcileGroupKeys(
+  groups: DefectGroup[],
+  prior: Array<{ key: string; name: string; issueKeys: string[] }>,
+): DefectGroup[] {
+  if (prior.length === 0 || groups.length === 0) return groups;
+  const priorSets = prior.map((p) => ({ ...p, set: new Set(p.issueKeys) }));
+  // All candidate (new, prior) pairs above threshold, best overlap first.
+  const pairs: Array<{ gi: number; pi: number; jaccard: number }> = [];
+  groups.forEach((g, gi) => {
+    const gSet = new Set(g.issueKeys);
+    priorSets.forEach((p, pi) => {
+      let inter = 0;
+      for (const k of gSet) if (p.set.has(k)) inter++;
+      const union = gSet.size + p.set.size - inter;
+      const jaccard = union === 0 ? 0 : inter / union;
+      if (jaccard >= 0.5) pairs.push({ gi, pi, jaccard });
+    });
+  });
+  pairs.sort((a, b) => b.jaccard - a.jaccard);
+
+  const out = groups.map((g) => ({ ...g }));
+  const usedNew = new Set<number>();
+  const usedPrior = new Set<number>();
+  const takenKeys = new Set(groups.map((g) => g.key));
+  for (const { gi, pi } of pairs) {
+    if (usedNew.has(gi) || usedPrior.has(pi)) continue;
+    const p = priorSets[pi];
+    // Never create a duplicate key: if another (unmatched) new group already
+    // holds the prior key, leave both as they are.
+    if (p.key !== out[gi].key && takenKeys.has(p.key)) continue;
+    usedNew.add(gi);
+    usedPrior.add(pi);
+    takenKeys.delete(out[gi].key);
+    takenKeys.add(p.key);
+    out[gi].key = p.key;
+    out[gi].name = p.name;
+  }
+  return out;
 }
 
 export function emptyProductDefectAnalysis(totalTickets = 0, jql = ""): ProductDefectAnalysis {
@@ -1794,9 +1852,21 @@ export async function analyzeProductDefects(
   // --- Phase 2: synthesis ---------------------------------------------------
   opts.onProgress?.({ phase: "synthesize", done: 0, total: 1 });
   const rollups = rollupByCategory(signals);
+  // Seed the previous run's taxonomy so group identity survives re-runs. The
+  // instruction lives here rather than in the system prompt so the cacheable
+  // system block stays byte-identical across runs.
+  const priorTaxonomy = (opts.priorGroups ?? [])
+    .map((g) => ({ name: g.name, description: g.description ?? "" }))
+    .filter((g) => g.name && g.name !== REMAINDER_GROUP_NAME);
+  const priorBlock =
+    priorTaxonomy.length > 0
+      ? `\n\nEXISTING TAXONOMY (from the previous run). Reuse these group names VERBATIM wherever the concept matches — renaming an unchanged concept breaks every trend that keys off the group. Add a new group only for a pattern this taxonomy does not cover, and drop one only if nothing belongs in it:\n${JSON.stringify(
+          priorTaxonomy,
+        )}`
+      : "";
   const synthUser = `Today is ${today()}. ${signals.length} customer-found defects were grouped into ${
     rollups.length
-  } raw categories during extraction. Merge them into the canonical taxonomy.\n\n${rollups
+  } raw categories during extraction. Merge them into the canonical taxonomy.${priorBlock}\n\n${rollups
     .map((r) => JSON.stringify(r))
     .join("\n")}`;
   let synthRaw: unknown = {};
@@ -1851,6 +1921,9 @@ export async function analyzeProductDefects(
   }
 
   const synth = normalizeSynthesis(synthRaw, signals, { assignments });
+  // Reconcile BEFORE anything downstream keys off the taxonomy — deep-dives,
+  // strategies, team plans and component slices all reference group keys.
+  synth.groups = reconcileGroupKeys(synth.groups, opts.priorGroups ?? []);
   const bucket = synth.groups.find((g) => g.name === REMAINDER_GROUP_NAME);
   if (bucket) {
     console.warn(

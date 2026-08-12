@@ -1946,3 +1946,79 @@ describe("analyzeProductDefects (orchestration with an injected LLM)", () => {
     expect(progress).not.toContain("components");
   });
 });
+
+// ---------------------------------------------------------------------------
+// reconcileGroupKeys — taxonomy stability across runs
+// ---------------------------------------------------------------------------
+
+import { reconcileGroupKeys } from "@/lib/product-defects-analysis";
+
+function mkGroup(key: string, name: string, issueKeys: string[]): DefectGroup {
+  return {
+    key,
+    name,
+    description: "",
+    issueKeys,
+    ticketCount: issueKeys.length,
+    share: 0,
+    subGroups: [],
+    rootCauses: [],
+    analysis: "",
+    escapeAnalysis: "",
+    topAreas: [],
+    detectionStages: [],
+    triggers: [],
+    severityAvg: 0,
+    preventabilityAvg: 0,
+    regressionCount: 0,
+    exampleQuotes: [],
+  };
+}
+
+const keys = (n: number, prefix = "EAC-") => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+
+describe("reconcileGroupKeys", () => {
+  it("adopts the prior key and name when the population clearly matches", () => {
+    const prior = [{ key: "ingestion-extraction-correctness", name: "Ingestion & extraction correctness", issueKeys: keys(100) }];
+    // Same population, reworded name (the measured failure mode).
+    const next = [mkGroup("extraction-ingestion-correctness", "Extraction ingestion correctness", keys(95))];
+    const out = reconcileGroupKeys(next, prior);
+    expect(out[0].key).toBe("ingestion-extraction-correctness");
+    expect(out[0].name).toBe("Ingestion & extraction correctness");
+    // Membership and stats are untouched — only identity is reconciled.
+    expect(out[0].issueKeys).toHaveLength(95);
+  });
+
+  it("keeps a genuinely new group's identity", () => {
+    const prior = [{ key: "old", name: "Old", issueKeys: keys(50, "A-") }];
+    const next = [mkGroup("brand-new", "Brand new", keys(50, "B-"))];
+    const out = reconcileGroupKeys(next, prior);
+    expect(out[0].key).toBe("brand-new");
+    expect(out[0].name).toBe("Brand new");
+  });
+
+  it("on a split, the larger half keeps the old identity and the smaller half stays new", () => {
+    const all = keys(100);
+    const prior = [{ key: "parent", name: "Parent", issueKeys: all }];
+    const big = mkGroup("parent-ish", "Parent-ish", all.slice(0, 70));
+    const small = mkGroup("offshoot", "Offshoot", all.slice(70));
+    const out = reconcileGroupKeys([big, small], prior);
+    expect(out[0].key).toBe("parent"); // 70/100 ≥ 0.5 wins greedily
+    expect(out[1].key).toBe("offshoot"); // 30/100 < 0.5, keeps its own
+  });
+
+  it("never produces a duplicate key", () => {
+    // A new group already (coincidentally) holds the prior key; another new
+    // group overlaps the prior population. Adopting would collide — it must not.
+    const prior = [{ key: "stable", name: "Stable", issueKeys: keys(40) }];
+    const squatter = mkGroup("stable", "Different thing", keys(40, "Z-"));
+    const overlapper = mkGroup("renamed", "Renamed", keys(38));
+    const out = reconcileGroupKeys([squatter, overlapper], prior);
+    expect(new Set(out.map((g) => g.key)).size).toBe(out.length);
+  });
+
+  it("is a no-op with no prior taxonomy", () => {
+    const next = [mkGroup("a", "A", keys(3))];
+    expect(reconcileGroupKeys(next, [])).toEqual(next);
+  });
+});

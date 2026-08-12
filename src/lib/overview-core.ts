@@ -57,6 +57,81 @@ export interface Overview {
     needPing: number;
     closeCandidates: number;
   };
+  /** Prevention picture from the Product Defect Analysis; null until it has run. */
+  pda?: PdaAttention | null;
+}
+
+/** One metric currently moving the wrong way, ready to render without joins. */
+export interface PdaWrongWayMetric {
+  key: string;
+  name: string;
+  unit: string;
+  baseline: number;
+  current: number;
+  /** Relative move as a signed percentage of baseline (display-ready). */
+  movePct: number;
+}
+
+/**
+ * The Product Defect Analysis distilled to what belongs on the landing page:
+ * metrics degrading vs baseline and the funded-next prevention actions. The
+ * triage queue above it says "work these tickets"; this says "fix the system
+ * that produces them" — both are EM actions, so they live on one screen.
+ */
+export interface PdaAttention {
+  generatedAt: string;
+  href: string;
+  totalDefects: number;
+  wrongWay: PdaWrongWayMetric[];
+  nowStrategies: Array<{ key: string; title: string; team: string; discipline: string }>;
+}
+
+interface PdaMetricLike {
+  key: string;
+  name: string;
+  unit: string;
+  direction: "down-good" | "up-good";
+  automated: boolean;
+  current: number | null;
+  baseline: number | null;
+}
+interface PdaStrategyLike {
+  key: string;
+  title: string;
+  team: string;
+  discipline: string;
+  priority: string;
+}
+
+/** PURE. Distill a PDA report into the landing-page attention block. */
+export function buildPdaAttention(report: {
+  generatedAt: string;
+  analyzedTickets: number;
+  metrics: PdaMetricLike[];
+  strategies: PdaStrategyLike[];
+}): PdaAttention {
+  const wrongWay: PdaWrongWayMetric[] = [];
+  for (const m of report.metrics) {
+    if (!m.automated || m.current == null || m.baseline == null || m.baseline === 0) continue;
+    const d = m.current - m.baseline;
+    const worse = m.direction === "down-good" ? d > 0 : d < 0;
+    const movePct = Math.round((d / Math.abs(m.baseline)) * 1000) / 10;
+    // Sub-2% relative moves are noise at this population size, not a trend.
+    if (!worse || Math.abs(movePct) < 2) continue;
+    wrongWay.push({ key: m.key, name: m.name, unit: m.unit, baseline: m.baseline, current: m.current, movePct });
+  }
+  wrongWay.sort((a, b) => Math.abs(b.movePct) - Math.abs(a.movePct));
+
+  return {
+    generatedAt: report.generatedAt,
+    href: "/product-defects",
+    totalDefects: report.analyzedTickets,
+    wrongWay: wrongWay.slice(0, 4),
+    nowStrategies: report.strategies
+      .filter((s) => s.priority === "now")
+      .slice(0, 5)
+      .map((s) => ({ key: s.key, title: s.title, team: s.team, discipline: s.discipline })),
+  };
 }
 
 export interface ScopeInput {

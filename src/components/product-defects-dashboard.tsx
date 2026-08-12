@@ -41,6 +41,8 @@ import {
   type ActionPriority,
   type CodeCorrelation,
   type CodeHotspot,
+  type ComponentAnalysis,
+  type DetectionStage,
   type DefectGroup,
   type DefectMetric,
   type DefectSignal,
@@ -176,6 +178,49 @@ export function ProductDefectsDashboard() {
     [report],
   );
 
+  /**
+   * Metrics degrading vs baseline, worst relative move first. This is the
+   * report's "so what" — it leads the page so the reader starts from what is
+   * getting worse, not from prose.
+   */
+  const wrongWay = useMemo(
+    () =>
+      (report?.metrics ?? [])
+        .filter((m) => m.automated)
+        .map((m) => ({ metric: m, delta: metricDelta(m) }))
+        .filter((x) => x.delta.tone === "bad")
+        .sort((a, b) => Math.abs(b.delta.pct ?? 0) - Math.abs(a.delta.pct ?? 0)),
+    [report],
+  );
+
+  /**
+   * Per-group monthly inflow, computed from ticket created dates — the data was
+   * always in the report; this makes each group answer "growing or shrinking?"
+   * at a glance instead of only "how big?".
+   */
+  const inflowByGroup = useMemo(() => {
+    const createdByKey = new Map(issues.map((i) => [i.key, i.created.slice(0, 7)]));
+    const months = lastMonths(13);
+    const currentMonth = months[months.length - 1];
+    const out = new Map<string, MetricPoint[]>();
+    for (const g of report?.groups ?? []) {
+      const counts = new Map<string, number>();
+      for (const k of g.issueKeys) {
+        const m = createdByKey.get(k);
+        if (m) counts.set(m, (counts.get(m) ?? 0) + 1);
+      }
+      out.set(
+        g.key,
+        months.map((period) => ({
+          period,
+          value: counts.get(period) ?? 0,
+          ...(period === currentMonth ? { partial: true } : {}),
+        })),
+      );
+    }
+    return out;
+  }, [report, issues]);
+
   return (
     <div className="flex-1 overflow-auto scroll-thin">
       <header className="px-6 py-2.5 border-b border-border flex items-start justify-between gap-4 sticky top-0 z-10 bg-bg/90 backdrop-blur">
@@ -224,6 +269,13 @@ export function ProductDefectsDashboard() {
         <div className="p-6 space-y-6">
           <TopLine report={report} headlineMetrics={headlineMetrics} />
 
+          {wrongWay.length > 0 && (
+            <AttentionStrip
+              wrongWay={wrongWay}
+              nowCount={report.strategies.filter((s) => s.priority === "now").length}
+            />
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -242,7 +294,20 @@ export function ProductDefectsDashboard() {
             <MetricsSection metrics={report.metrics} groupNameByKey={groupNameByKey} />
           )}
 
-          <GroupsSection groups={report.groups} codeByGroup={codeByGroup} ticketCtx={ticketCtx} />
+          {report.components.length > 0 && (
+            <EscapeMatrixSection
+              components={report.components}
+              signals={report.signals}
+              analyzed={report.analyzedTickets}
+            />
+          )}
+
+          <GroupsSection
+            groups={report.groups}
+            codeByGroup={codeByGroup}
+            ticketCtx={ticketCtx}
+            inflowByGroup={inflowByGroup}
+          />
 
           {report.codeCorrelation && (
             <CodeCorrelationSection correlation={report.codeCorrelation} ticketCtx={ticketCtx} />
@@ -843,14 +908,195 @@ function ReferenceLine({ y, label, color }: { y: number; label: string; color: s
 
 type GroupCodeLink = CodeCorrelation["byGroup"][number];
 
+/** Months as YYYY-MM, oldest first, ending with the current (partial) month. */
+function lastMonths(n: number): string[] {
+  const now = new Date();
+  const out: string[] = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    out.push(d.toISOString().slice(0, 7));
+  }
+  return out;
+}
+
+/**
+ * Tone for a group's inflow trend: last complete month vs the mean of the
+ * complete months before it. Down is good (fewer new defects of this kind).
+ * The threshold is 15% — monthly counts here are small (5–35), so the 1% rule
+ * the big metrics use would flicker on single-ticket noise.
+ */
+function inflowTone(series: MetricPoint[]): DeltaTone {
+  const complete = series.filter((p) => !p.partial && p.value != null) as Array<
+    MetricPoint & { value: number }
+  >;
+  if (complete.length < 4) return "unknown";
+  const last = complete[complete.length - 1].value;
+  const prior = complete.slice(0, -1);
+  const mean = prior.reduce((n, p) => n + p.value, 0) / prior.length;
+  if (mean === 0) return last === 0 ? "flat" : "bad";
+  const move = (last - mean) / mean;
+  if (Math.abs(move) < 0.15) return "flat";
+  return move < 0 ? "good" : "bad";
+}
+
+/**
+ * The report's "so what", pinned above the prose: which metrics are degrading
+ * and how much funded-now work exists. Everything else on the page is context
+ * for these two facts.
+ */
+function AttentionStrip({
+  wrongWay,
+  nowCount,
+}: {
+  wrongWay: Array<{ metric: DefectMetric; delta: MetricDeltaResult }>;
+  nowCount: number;
+}) {
+  return (
+    <div className="rounded border border-danger/30 bg-danger/5 px-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-1.5">
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-danger shrink-0">
+        <AlertTriangle className="h-3.5 w-3.5" /> Needs attention
+      </span>
+      {wrongWay.slice(0, 4).map(({ metric }) => (
+        <span key={metric.key} className="text-xs whitespace-nowrap">
+          <span className="text-fg-muted">{metric.name}</span>{" "}
+          <span className="font-mono">
+            <span className="text-fg-subtle">{fmtValue(metric.baseline, metric.unit)}</span>
+            <span className="text-fg-subtle">→</span>
+            <span className="text-danger font-semibold">{fmtValue(metric.current, metric.unit)}</span>
+          </span>
+        </span>
+      ))}
+      {nowCount > 0 && (
+        <a href="#pda-strategies" className="ml-auto text-xs text-accent hover:underline whitespace-nowrap">
+          {nowCount} “now” prevention action{nowCount === 1 ? "" : "s"} ↓
+        </a>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Components × detection-stage heatmap — each component's escape signature on
+ * one screen. The rows genuinely differ (Graph skews scale-test at 2× the
+ * fleet, FrontEnd e2e/manual-QA at 3–4×), and that difference is the whole
+ * argument for per-team prescriptions, so it deserves a view of its own rather
+ * than living implicitly across eight drilldown pages.
+ */
+function EscapeMatrixSection({
+  components,
+  signals,
+  analyzed,
+}: {
+  components: ComponentAnalysis[];
+  signals: DefectSignal[];
+  analyzed: number;
+}) {
+  const model = useMemo(() => {
+    // Population baseline row, excluding "unclassified": it is missing data,
+    // not a gate, and letting it claim a column would understate real gaps.
+    const popCounts = new Map<DetectionStage, number>();
+    for (const s of signals) {
+      if (s.detectionStage === "unclassified") continue;
+      popCounts.set(s.detectionStage, (popCounts.get(s.detectionStage) ?? 0) + 1);
+    }
+    const stages = [...popCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([stage]) => stage);
+    const pct = (count: number, total: number) => (total === 0 ? 0 : (100 * count) / total);
+    const rows = components.map((c) => {
+      const byStage = new Map(c.detectionStages.map((d) => [d.stage, d.count]));
+      return {
+        label: c.component,
+        slug: c.slug,
+        total: c.defectCount,
+        cells: stages.map((st) => pct(byStage.get(st) ?? 0, c.defectCount)),
+      };
+    });
+    const baseline = stages.map((st) => pct(popCounts.get(st) ?? 0, analyzed));
+    const max = Math.max(...rows.flatMap((r) => r.cells), ...baseline, 1);
+    return { stages, rows, baseline, max };
+  }, [components, signals, analyzed]);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Target className="h-4 w-4 text-warning" />
+        <h2 className="text-sm font-semibold">Escape signature by component</h2>
+        <span className="text-xs text-fg-muted">
+          share of each component&apos;s defects, by the gate that should have caught them
+        </span>
+      </div>
+      <Card>
+        <CardBody className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-fg-subtle">
+                <th className="text-left font-normal pb-2 pr-3">Component</th>
+                {model.stages.map((st) => (
+                  <th key={st} className="text-right font-normal pb-2 px-2 whitespace-nowrap">
+                    {DETECTION_STAGE_LABELS[st]}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-border/60 text-fg-muted">
+                <td className="py-1.5 pr-3 italic">All defects · {analyzed.toLocaleString()}</td>
+                {model.baseline.map((v, i) => (
+                  <HeatCell key={i} value={v} max={model.max} muted />
+                ))}
+              </tr>
+              {model.rows.map((r) => (
+                <tr key={r.slug} className="border-t border-border/60">
+                  <td className="py-1.5 pr-3">
+                    <a href={`/product-defects/${r.slug}`} className="text-fg hover:text-accent">
+                      {r.label}
+                    </a>
+                    <span className="text-fg-subtle font-mono text-[10px]"> · {r.total}</span>
+                  </td>
+                  {r.cells.map((v, i) => (
+                    <HeatCell key={i} value={v} max={model.max} />
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-[10px] text-fg-subtle mt-2">
+            Cell shading is relative to the hottest cell. “Unclassified” signals are excluded —
+            missing data is not a gate. Components are tags, so rows overlap the population.
+          </p>
+        </CardBody>
+      </Card>
+    </section>
+  );
+}
+
+function HeatCell({ value, max, muted }: { value: number; max: number; muted?: boolean }) {
+  return (
+    <td className="relative py-1.5 px-2 text-right font-mono">
+      <span
+        aria-hidden="true"
+        className="absolute inset-0.5 rounded-sm bg-warning"
+        style={{ opacity: value === 0 ? 0 : 0.06 + (value / max) * 0.3 }}
+      />
+      <span className={cn("relative", muted ? "text-fg-subtle" : value === 0 ? "text-fg-subtle" : "text-fg")}>
+        {value === 0 ? "·" : `${Math.round(value)}%`}
+      </span>
+    </td>
+  );
+}
+
 function GroupsSection({
   groups,
   codeByGroup,
   ticketCtx,
+  inflowByGroup,
 }: {
   groups: DefectGroup[];
   codeByGroup: Map<string, GroupCodeLink>;
   ticketCtx: TicketContext;
+  inflowByGroup: Map<string, MetricPoint[]>;
 }) {
   return (
     <section className="space-y-3">
@@ -872,6 +1118,7 @@ function GroupsSection({
               code={codeByGroup.get(g.key)}
               defaultOpen={i === 0}
               ticketCtx={ticketCtx}
+              inflow={inflowByGroup.get(g.key)}
             />
           )}
         </CappedList>
@@ -885,13 +1132,16 @@ function GroupCard({
   code,
   defaultOpen,
   ticketCtx,
+  inflow,
 }: {
   group: DefectGroup;
   code?: GroupCodeLink;
   defaultOpen?: boolean;
   ticketCtx: TicketContext;
+  inflow?: MetricPoint[];
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
+  const trendTone = inflow ? inflowTone(inflow) : "unknown";
   return (
     <Card className="overflow-hidden">
       <button
@@ -913,6 +1163,16 @@ function GroupCard({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {inflow && trendTone !== "unknown" && (
+            <span
+              className="hidden xl:block w-[88px]"
+              title={`New defects per month, last ${inflow.length} months — ${
+                trendTone === "good" ? "falling" : trendTone === "bad" ? "rising" : "flat"
+              }`}
+            >
+              <MetricSparkline series={inflow} tone={trendTone} height={20} />
+            </span>
+          )}
           {group.regressionCount > 0 && (
             <Badge className="border border-warning/40 bg-warning/10 text-warning">
               {group.regressionCount} regr
@@ -1405,7 +1665,7 @@ function StrategiesSection({
   }, [filtered]);
 
   return (
-    <section className="space-y-3">
+    <section id="pda-strategies" className="space-y-3 scroll-mt-16">
       <div className="flex items-center gap-2 flex-wrap">
         <ShieldCheck className="h-4 w-4 text-success" />
         <h2 className="text-sm font-semibold">Prevention strategies</h2>

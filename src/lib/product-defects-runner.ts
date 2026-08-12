@@ -2,6 +2,7 @@ import { searchAllIssues } from "@/lib/jira";
 import { getConfig } from "@/lib/config";
 import {
   replaceProductDefectIssues,
+  latestProductDefectReport,
   saveProductDefectReport,
   saveProductDefectSignals,
   listProductDefectSignals,
@@ -192,11 +193,22 @@ export async function runProductDefectSync(): Promise<void> {
         message: `Resuming: ${cachedSignals.length} of ${issues.length} signals reused from cache`,
       });
     }
+    // Seed the previous taxonomy so group keys stay stable across runs —
+    // without it the model rewords group names freely and every cross-run
+    // trend that keys off a group breaks (measured: 92% of tickets changed
+    // group key between two runs on identical data).
+    const priorGroups = (latestProductDefectReport()?.groups ?? []).map((g) => ({
+      key: g.key,
+      name: g.name,
+      description: g.description,
+      issueKeys: g.issueKeys,
+    }));
     const report = await analyzeProductDefects(issues, {
       model: config.model,
       jql: config.pdaJql,
       correlation,
       metrics: baseMetrics,
+      priorGroups,
       cachedSignals,
       onSignalsBatch: (batch) => saveProductDefectSignals(batch, updatedByKey),
       // Extraction is I/O-bound on the API and the SDK already retries 429/529

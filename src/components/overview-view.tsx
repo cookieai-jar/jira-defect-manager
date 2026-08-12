@@ -15,8 +15,10 @@ import {
   ExternalLink,
   Loader2,
   RefreshCw,
+  TrendingDown,
+  Wrench,
 } from "lucide-react";
-import type { ActionItem, ActionKind, Overview } from "@/lib/overview-core";
+import type { ActionItem, ActionKind, Overview, PdaAttention } from "@/lib/overview-core";
 import { cn } from "@/lib/utils";
 
 const KIND_META: Record<ActionKind, { label: string; icon: typeof AlertTriangle; cls: string }> = {
@@ -102,6 +104,12 @@ export function OverviewView() {
             />
           </div>
 
+          {/* Prevention picture — the queue below says "work these tickets";
+              this says "fix the system that produces them". */}
+          {data.pda && (data.pda.wrongWay.length > 0 || data.pda.nowStrategies.length > 0) && (
+            <PdaAttentionCard pda={data.pda} />
+          )}
+
           {/* Per-dashboard summary cards (drill-in) */}
           <section className="space-y-2">
             <h2 className="text-sm font-semibold text-fg-muted">Dashboards</h2>
@@ -186,6 +194,69 @@ export function OverviewView() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Two-column prevention block: metrics currently degrading vs their baseline,
+ * and the "now"-priority prevention actions from the latest Product Defect
+ * Analysis. Deliberately compact — full context lives one click away.
+ */
+function PdaAttentionCard({ pda }: { pda: PdaAttention }) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-fg-muted">Prevention</h2>
+        <span className="text-xs text-fg-subtle">
+          from Product Defect Analysis · {pda.totalDefects.toLocaleString()} defects ·{" "}
+          {new Date(pda.generatedAt).toLocaleDateString()}
+        </span>
+        <Link href={pda.href} className="ml-auto text-xs text-accent hover:underline">
+          Full analysis →
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {pda.wrongWay.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-1.5 text-danger">
+                <TrendingDown className="h-3.5 w-3.5" /> Moving the wrong way
+              </CardTitle>
+            </CardHeader>
+            <CardBody className="space-y-1.5">
+              {pda.wrongWay.map((m) => (
+                <div key={m.key} className="flex items-baseline gap-2 text-xs">
+                  <span className="text-fg-muted truncate">{m.name}</span>
+                  <span className="ml-auto shrink-0 font-mono">
+                    <span className="text-fg-subtle">{m.baseline}</span>
+                    <span className="text-fg-subtle"> → </span>
+                    <span className="text-danger font-semibold">{m.current}</span>
+                    <span className="text-fg-subtle"> {m.unit}</span>
+                  </span>
+                </div>
+              ))}
+            </CardBody>
+          </Card>
+        )}
+        {pda.nowStrategies.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-1.5">
+                <Wrench className="h-3.5 w-3.5 text-accent" /> Prevention actions — now
+              </CardTitle>
+            </CardHeader>
+            <CardBody className="space-y-1.5">
+              {pda.nowStrategies.map((s) => (
+                <div key={s.key} className="text-xs">
+                  <span className="text-fg truncate">{s.title}</span>
+                  <span className="text-fg-subtle"> · {s.team}</span>
+                </div>
+              ))}
+            </CardBody>
+          </Card>
+        )}
+      </div>
+    </section>
   );
 }
 
