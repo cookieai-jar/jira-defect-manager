@@ -377,13 +377,15 @@ export function DashboardView({ scope, title }: Props) {
                     scope === "alerts" ||
                     scope === "incidents" ||
                     scope === "alldefects" ||
-                    scope === "ops"
+                    scope === "ops" ||
+                    scope === "automation"
                   }
                   showCreated={scope === "sec"}
                   showAssignee
                   showScores={false}
                   showPing={scope === "eac"}
-                  defaultSort={scope === "sec" ? { key: "created", dir: "desc" } : undefined}
+                  showPriority={scope === "sec"}
+                  defaultSort={scope === "sec" ? { key: "issuePriority", dir: "desc" } : undefined}
                 />
               </section>
 

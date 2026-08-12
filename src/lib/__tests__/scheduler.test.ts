@@ -22,9 +22,10 @@ describe("autoSyncScopes", () => {
           incidents: true,
           alldefects: true,
           ops: true,
+          automation: true,
         },
       }),
-    ).toEqual(["eac", "fr", "sec", "alerts", "incidents", "alldefects", "ops"]);
+    ).toEqual(["eac", "fr", "sec", "alerts", "incidents", "alldefects", "ops", "automation"]);
   });
   it("excludes scopes whose dashboard is disabled", () => {
     expect(
@@ -37,6 +38,7 @@ describe("autoSyncScopes", () => {
           incidents: false,
           alldefects: false,
           ops: false,
+          automation: false,
         },
       }),
     ).toEqual(["eac", "sec"]);
@@ -50,6 +52,7 @@ describe("autoSyncScopes", () => {
       "incidents",
       "alldefects",
       "ops",
+      "automation",
     ]);
   });
 });

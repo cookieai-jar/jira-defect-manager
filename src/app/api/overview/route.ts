@@ -15,6 +15,7 @@ const SCOPE_HREF: Record<Scope, string> = {
   incidents: "/incidents",
   alldefects: "/all-defects",
   ops: "/ops",
+  automation: "/automation",
 };
 
 export async function GET() {

@@ -47,6 +47,8 @@ function scopeDescription(s: Scope): string {
       return "All open Integrations bug defects (EAC).";
     case "ops":
       return "OPS project tickets assigned to the on-call owner.";
+    case "automation":
+      return "Bug defects filed by the automation reporters (EAC).";
   }
 }
 

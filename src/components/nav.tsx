@@ -17,6 +17,7 @@ import {
   BookOpen,
   Boxes,
   HeartPulse,
+  Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -36,6 +37,7 @@ const ALL_ITEMS: NavItem[] = [
   { href: "/all-defects", label: "All Defects", icon: Bug, scope: "alldefects" },
   { href: "/ops", label: "OPS", icon: Wrench, scope: "ops" },
   { href: "/", label: "Customer Defects", icon: LayoutDashboard, scope: "eac" },
+  { href: "/automation", label: "Automation Defects", icon: Bot, scope: "automation" },
   { href: "/fr/poc", label: "Feature Requests", icon: ClipboardList, scope: "fr" },
   { href: "/security", label: "Vulnerabilities", icon: ShieldAlert, scope: "sec" },
   { href: "/alerts", label: "Alerts", icon: Siren, scope: "alerts" },

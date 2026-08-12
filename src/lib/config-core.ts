@@ -16,6 +16,8 @@ export const DEFAULTS: AppConfig = {
     alldefects:
       "project = EAC and component in (Integrations) and statusCategory != Done and issuetype = Bug and createdDate >= '2026-01-01 00:00' ORDER BY created ASC, priority DESC, updated DESC",
     ops: "project = OPS and assignee = 62c87d212c528400c9b7618f and status != Done ORDER BY priority DESC, updated DESC",
+    automation:
+      "project = EAC and reporter in (712020:c6d4269a-0c97-4c14-83aa-acd4282ce1aa, 712020:a20fd403-2a10-49ca-9ce1-393a1b9e8209, 712020:085da38d-f61f-4cba-bbfc-04d3f1df5c1a) and status not in (Done) and issuetype = Bug",
   },
   dashboards: {
     eac: true,
@@ -25,6 +27,7 @@ export const DEFAULTS: AppConfig = {
     incidents: true,
     alldefects: true,
     ops: true,
+    automation: true,
   },
   siJql:
     "project = INTEG AND issuetype in (Bug, Defect) AND labels = strategic-integration ORDER BY created DESC",
@@ -72,6 +75,7 @@ export function parseConfig(raw: string | null): AppConfig {
     incidents: parsed.jqls?.incidents ?? DEFAULTS.jqls.incidents,
     alldefects: parsed.jqls?.alldefects ?? DEFAULTS.jqls.alldefects,
     ops: parsed.jqls?.ops ?? DEFAULTS.jqls.ops,
+    automation: parsed.jqls?.automation ?? DEFAULTS.jqls.automation,
   };
   const dashboards: Record<Scope, boolean> = {
     eac: parsed.dashboards?.eac ?? true,
@@ -81,6 +85,7 @@ export function parseConfig(raw: string | null): AppConfig {
     incidents: parsed.dashboards?.incidents ?? true,
     alldefects: parsed.dashboards?.alldefects ?? true,
     ops: parsed.dashboards?.ops ?? true,
+    automation: parsed.dashboards?.automation ?? true,
   };
   return {
     ...DEFAULTS,
