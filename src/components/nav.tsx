@@ -83,8 +83,13 @@ const openKey = (group: string) => `nav.${group}.expanded`;
 
 const NAV: NavEntry[] = [
   {
-    key: "overview",
-    label: "Overview",
+    // Named "Integrations" per the product owner. Note this is a GROUPING
+    // header for the day-to-day dashboards — it is unrelated to the
+    // "Integrations" JIRA component page under Product Defect Analysis, which
+    // is a defect analysis for one component. Two sidebar entries therefore
+    // read "Integrations"; they are different things.
+    key: "integrations",
+    label: "Integrations",
     icon: Gauge,
     // Open by default: these are the day-to-day dashboards, and a collapsed
     // group would hide almost the whole app behind one click.
