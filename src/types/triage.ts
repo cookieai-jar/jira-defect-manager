@@ -208,6 +208,12 @@ export interface AppConfig {
   siDashboard: boolean;
   /** Whether the per-tenant Integrations Health dashboard is shown in the sidebar. */
   tenantDashboard: boolean;
+  /** JQL defining the universe of customer-found defects to analyze. */
+  pdaJql: string;
+  /** Whether the Product Defect Analysis dashboard is shown in the sidebar. */
+  pdaDashboard: boolean;
+  /** Absolute path to the product source repo that defects are correlated against. */
+  codeRepoPath: string;
   sprintLengthDays: number;
   inactivityThresholdDays: number;
   pingThresholdDays: number;

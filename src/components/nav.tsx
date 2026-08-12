@@ -18,6 +18,7 @@ import {
   Boxes,
   HeartPulse,
   Bot,
+  Microscope,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AppConfig, Scope } from "@/types/triage";
@@ -29,7 +30,7 @@ interface NavItem {
   /** If set, the item is shown only when config.dashboards[scope] is true. */
   scope?: Scope;
   /** If set, the item is shown only when config[<flag>] is not false. */
-  flag?: "siDashboard" | "tenantDashboard";
+  flag?: "siDashboard" | "tenantDashboard" | "pdaDashboard";
 }
 
 const ALL_ITEMS: NavItem[] = [
@@ -43,6 +44,12 @@ const ALL_ITEMS: NavItem[] = [
   { href: "/alerts", label: "Alerts", icon: Siren, scope: "alerts" },
   { href: "/incidents", label: "Incidents", icon: Flame, scope: "incidents" },
   { href: "/integrations", label: "Integrations Hardening", icon: Boxes, flag: "siDashboard" },
+  {
+    href: "/product-defects",
+    label: "Product Defect Analysis",
+    icon: Microscope,
+    flag: "pdaDashboard",
+  },
   { href: "/tenants", label: "Tenant Health", icon: HeartPulse, flag: "tenantDashboard" },
   { href: "/definitions", label: "Priority Definitions/SLAs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },

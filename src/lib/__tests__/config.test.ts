@@ -35,6 +35,21 @@ describe("parseConfig", () => {
     expect(c.siDashboard).toBe(true);
   });
 
+  it("includes the Product Defect Analysis defaults", () => {
+    const c = defaults();
+    expect(c.pdaJql).toContain("Customer[Select List (multiple choices)]");
+    expect(c.pdaDashboard).toBe(true);
+    expect(c.codeRepoPath.startsWith("/")).toBe(true);
+  });
+
+  it("preserves stored pda fields and backfills the missing ones", () => {
+    const c = parseConfig(JSON.stringify({ pdaJql: "project = EAC", pdaDashboard: false }));
+    expect(c.pdaJql).toBe("project = EAC");
+    expect(c.pdaDashboard).toBe(false);
+    expect(c.codeRepoPath).toBe(defaults().codeRepoPath); // backfilled
+    expect(parseConfig(JSON.stringify({})).pdaDashboard).toBe(true);
+  });
+
   it("defaults tenantDashboard to true and preserves a stored false", () => {
     expect(defaults().tenantDashboard).toBe(true);
     expect(parseConfig(JSON.stringify({})).tenantDashboard).toBe(true);

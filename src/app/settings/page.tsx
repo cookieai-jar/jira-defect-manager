@@ -28,8 +28,11 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "analysis", label: "Analysis" },
 ];
 
-/** "si" is the Integrations Hardening scope, which isn't a triage Scope. */
-type ScopeTab = Scope | "si";
+/**
+ * "si" (Integrations Hardening) and "pda" (Product Defect Analysis) are
+ * cross-ticket analysis dashboards, not triage Scopes.
+ */
+type ScopeTab = Scope | "si" | "pda";
 
 function scopeDescription(s: Scope): string {
   switch (s) {
@@ -199,6 +202,12 @@ export default function SettingsPage() {
                 label="Show Integrations Hardening"
                 description="Cross-ticket pattern analysis of integration defects: issue categories, root causes, and developer/QE hardening steps."
               />
+              <Toggle
+                checked={config.pdaDashboard}
+                onChange={(next) => setConfig({ ...config, pdaDashboard: next })}
+                label="Show Product Defect Analysis"
+                description="Deep analysis of customer-found defects: what kinds escape us, why they escaped, where they live in the code, and what to change to prevent them."
+              />
             </CardBody>
           </Card>
         )}
@@ -226,6 +235,11 @@ export default function SettingsPage() {
                   onClick={() => setScopeTab("si")}
                   label="Integrations Hardening"
                 />
+                <ScopePill
+                  active={scopeTab === "pda"}
+                  onClick={() => setScopeTab("pda")}
+                  label="Product Defect Analysis"
+                />
               </div>
 
               {scopeTab === "si" ? (
@@ -240,6 +254,35 @@ export default function SettingsPage() {
                     Every ticket matched here is run through the deep analysis to surface recurring
                     issue categories, root causes, and developer/QE hardening steps.
                   </p>
+                </div>
+              ) : scopeTab === "pda" ? (
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label>Product Defect Analysis JQL</Label>
+                    <Textarea
+                      value={config.pdaJql}
+                      onChange={(e) => setConfig({ ...config, pdaJql: e.target.value })}
+                      placeholder='project = EAC AND issuetype in (Bug) AND "Customer[Select List (multiple choices)]" is not EMPTY and created >= -400d'
+                    />
+                    <p className="text-[11px] text-fg-subtle">
+                      The universe of customer-found defects to analyze: what kinds of defects
+                      customers hit, why each one escaped our gates, and what to change to prevent
+                      the next one.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Product source repo path</Label>
+                    <Input
+                      value={config.codeRepoPath}
+                      onChange={(e) => setConfig({ ...config, codeRepoPath: e.target.value })}
+                      placeholder="/Users/you/veza/cookieai-core"
+                    />
+                    <p className="text-[11px] text-fg-subtle">
+                      Absolute path to your local checkout of the product source. Defects are
+                      correlated against it via git history (fix commits referencing the ticket
+                      key) and CODEOWNERS, to find the hot files and the owning teams.
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-1.5">

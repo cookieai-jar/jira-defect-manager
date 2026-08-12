@@ -12,6 +12,7 @@ import type {
   PriorityChange,
 } from "@/types/triage";
 import type { IntegrationsAnalysis } from "@/types/integrations";
+import type { DefectSignal, ProductDefectAnalysis } from "@/types/product-defects";
 import type { ErrorRcaResult } from "@/types/tenant";
 
 const DATA_DIR = join(process.cwd(), "data");
@@ -108,6 +109,42 @@ export function db(): DatabaseSync {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       data TEXT NOT NULL,
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Product Defect Analysis: same split as the Strategic Integrations tables —
+    -- its own population of customer-found defects and its own cross-ticket
+    -- report, independent of the triage scopes.
+    CREATE TABLE IF NOT EXISTS product_defect_issues (
+      key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS product_defect_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Product Defect Analysis: per-ticket extraction checkpoint. Extracting
+    -- ~1300 defects costs over two hours of model time, and the report is only
+    -- written at the end of the pipeline — so without this, any interruption
+    -- throws all of it away. Signals are keyed by issue key and reused on the
+    -- next run; the issue row's synced_at is what invalidates them.
+    CREATE TABLE IF NOT EXISTS product_defect_signals (
+      issue_key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Product Defect Analysis: forward-accruing metric series. Metrics that can
+    -- be backfilled from ticket history live in the report; these are the ones
+    -- that only exist from the day we start recording them.
+    CREATE TABLE IF NOT EXISTS product_defect_metric_points (
+      day TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      value REAL NOT NULL,
+      PRIMARY KEY (day, metric)
     );
 
     -- Tenant Health: append-only per-tenant health-score snapshots, recorded
@@ -443,6 +480,132 @@ export function latestIntegrationsReport(): IntegrationsAnalysis | null {
     .prepare(`SELECT data FROM integration_reports ORDER BY id DESC LIMIT 1`)
     .get() as { data: string } | undefined;
   return row ? (JSON.parse(row.data) as IntegrationsAnalysis) : null;
+}
+
+// --- Product Defect Analysis storage ----------------------------------------
+
+/**
+ * Replace the stored product-defect issue set with the freshly synced one.
+ * Transactional: the population is ~1300 rows, so a failure part-way through
+ * must not leave the dashboard reading a half-empty table.
+ */
+export function replaceProductDefectIssues(issues: JiraIssue[]): void {
+  const conn = db();
+  const stmt = conn.prepare(
+    `INSERT INTO product_defect_issues (key, data, synced_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+  );
+  conn.exec("BEGIN");
+  try {
+    conn.exec("DELETE FROM product_defect_issues");
+    for (const issue of issues) stmt.run(issue.key, JSON.stringify(issue));
+    conn.exec("COMMIT");
+  } catch (e) {
+    conn.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+export function listProductDefectIssues(): JiraIssue[] {
+  const rows = db()
+    .prepare(`SELECT data FROM product_defect_issues ORDER BY key`)
+    .all() as { data: string }[];
+  return rows.map((r) => JSON.parse(r.data) as JiraIssue);
+}
+
+export function getProductDefectIssue(key: string): JiraIssue | null {
+  const row = db()
+    .prepare(`SELECT data FROM product_defect_issues WHERE key = ?`)
+    .get(key) as { data: string } | undefined;
+  return row ? (JSON.parse(row.data) as JiraIssue) : null;
+}
+
+export function saveProductDefectReport(report: ProductDefectAnalysis): number {
+  const info = db()
+    .prepare(`INSERT INTO product_defect_reports (data) VALUES (?)`)
+    .run(JSON.stringify(report));
+  return Number(info.lastInsertRowid);
+}
+
+export function latestProductDefectReport(): ProductDefectAnalysis | null {
+  const row = db()
+    .prepare(`SELECT data FROM product_defect_reports ORDER BY id DESC LIMIT 1`)
+    .get() as { data: string } | undefined;
+  return row ? (JSON.parse(row.data) as ProductDefectAnalysis) : null;
+}
+
+/**
+ * Checkpoint a batch of extracted defect signals. Called after every
+ * extraction batch so an interrupted run resumes instead of re-paying for
+ * work already done.
+ */
+export function saveProductDefectSignals(signals: DefectSignal[]): void {
+  if (signals.length === 0) return;
+  const conn = db();
+  const stmt = conn.prepare(
+    `INSERT INTO product_defect_signals (issue_key, data, generated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(issue_key) DO UPDATE SET data = excluded.data, generated_at = CURRENT_TIMESTAMP`,
+  );
+  conn.exec("BEGIN");
+  try {
+    for (const s of signals) stmt.run(s.issueKey, JSON.stringify(s));
+    conn.exec("COMMIT");
+  } catch (e) {
+    conn.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * Cached signals that are still trustworthy: the ticket must still be in the
+ * current population AND not have been re-synced since the signal was taken.
+ * A ticket that changed in JIRA gets re-extracted rather than analyzed stale.
+ */
+export function listFreshProductDefectSignals(): DefectSignal[] {
+  const rows = db()
+    .prepare(
+      `SELECT s.data FROM product_defect_signals s
+       JOIN product_defect_issues i ON i.key = s.issue_key
+       WHERE s.generated_at >= i.synced_at`,
+    )
+    .all() as { data: string }[];
+  return rows.map((r) => JSON.parse(r.data) as DefectSignal);
+}
+
+/** Drop every checkpointed signal — forces a full re-extraction on the next run. */
+export function clearProductDefectSignals(): void {
+  db().exec("DELETE FROM product_defect_signals");
+}
+
+/** Record one day's values for the forward-accruing metrics (re-run overwrites). */
+export function recordProductDefectMetricPoints(
+  day: string,
+  points: Array<{ metric: string; value: number }>,
+): void {
+  const conn = db();
+  const stmt = conn.prepare(
+    `INSERT INTO product_defect_metric_points (day, metric, value) VALUES (?, ?, ?)
+     ON CONFLICT(day, metric) DO UPDATE SET value = excluded.value`,
+  );
+  conn.exec("BEGIN");
+  try {
+    for (const p of points) stmt.run(day, p.metric, p.value);
+    conn.exec("COMMIT");
+  } catch (e) {
+    conn.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** Metric points on/after `sinceDay` (YYYY-MM-DD), ascending by day. */
+export function listProductDefectMetricPoints(
+  sinceDay: string,
+): Array<{ day: string; metric: string; value: number }> {
+  return db()
+    .prepare(
+      `SELECT day, metric, value FROM product_defect_metric_points WHERE day >= ? ORDER BY day`,
+    )
+    .all(sinceDay) as Array<{ day: string; metric: string; value: number }>;
 }
 
 /** Upsert a tenant's per-integration root-cause analysis (re-run overwrites). */
