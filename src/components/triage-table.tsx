@@ -18,6 +18,7 @@ import { Badge, TempBadge } from "@/components/ui/badge";
 import { cn, daysSince, formatDate } from "@/lib/utils";
 import { hasEpicParent } from "@/types/triage";
 import type { JiraIssue, Priority, SlaStatus, TicketAnalysis } from "@/types/triage";
+import { priorityFromString } from "@/lib/priority";
 import { updatePingStats } from "@/lib/triage-ping-core";
 
 type SortKey =
@@ -32,7 +33,8 @@ type SortKey =
   | "assignee"
   | "recommendation"
   | "sla"
-  | "priority";
+  | "priority"
+  | "issuePriority";
 
 interface Row extends TicketAnalysis {
   issue: JiraIssue;
@@ -49,6 +51,12 @@ const SLA_RANK: Record<SlaStatus, number> = {
 /** Ordering rank for priority — higher priority sorts first under "desc". */
 const PRIORITY_RANK: Record<Priority, number> = { P0: 4, P1: 3, P2: 2, P3: 1 };
 
+/** Rank for a raw JIRA priority string (e.g. "Highest"/"High"), 0 when unknown/unset. */
+function issuePriorityRank(raw: string | null): number {
+  const p = priorityFromString(raw);
+  return p ? PRIORITY_RANK[p] : 0;
+}
+
 const RECOMMENDATION_STYLES: Record<TicketAnalysis["recommendation"], string> = {
   close: "border-fg-subtle/40 bg-fg-subtle/10 text-fg-muted",
   "ping-reporter": "border-warning/40 bg-warning/10 text-warning",
@@ -56,6 +64,13 @@ const RECOMMENDATION_STYLES: Record<TicketAnalysis["recommendation"], string> = 
   escalate: "border-danger/40 bg-danger/10 text-danger",
   continue: "border-success/40 bg-success/10 text-success",
   schedule: "border-accent/40 bg-accent/10 text-accent",
+};
+
+const PRIORITY_BADGE_STYLES: Record<Priority, string> = {
+  P0: "border-danger/40 bg-danger/10 text-danger",
+  P1: "border-warning/40 bg-warning/10 text-warning",
+  P2: "border-accent/40 bg-accent/10 text-accent",
+  P3: "border-success/40 bg-success/10 text-success",
 };
 
 const SLA_STYLES: Record<SlaStatus, string> = {
@@ -75,6 +90,7 @@ export function TriageTable({
   showAssignee = false,
   showScores = true,
   showPing = false,
+  showPriority = false,
   defaultSort,
 }: {
   rows: Row[];
@@ -99,6 +115,8 @@ export function TriageTable({
   showScores?: boolean;
   /** When true, render a "Ping" column that comments on the ticket asking the assignee for an update. */
   showPing?: boolean;
+  /** When true, render a "Priority" column driven by the ticket's JIRA priority (not the eac-only analysis field). */
+  showPriority?: boolean;
   /** Initial sort. Defaults to rank, descending. */
   defaultSort?: { key: SortKey; dir: "asc" | "desc" };
 }) {
@@ -189,6 +207,9 @@ export function TriageTable({
           cmp =
             (b.currentPriority ? PRIORITY_RANK[b.currentPriority] : 0) -
             (a.currentPriority ? PRIORITY_RANK[a.currentPriority] : 0);
+          break;
+        case "issuePriority":
+          cmp = issuePriorityRank(b.issue.priority) - issuePriorityRank(a.issue.priority);
           break;
       }
       return sortDir === "asc" ? -cmp : cmp;
@@ -306,6 +327,9 @@ export function TriageTable({
                   <Th onClick={() => clickSort("temperature")} active={sortKey === "temperature"} dir={sortDir}>Temp</Th>
                 </>
               )}
+              {showPriority && (
+                <Th onClick={() => clickSort("issuePriority")} active={sortKey === "issuePriority"} dir={sortDir}>Priority</Th>
+              )}
               <Th onClick={() => clickSort("recommendation")} active={sortKey === "recommendation"} dir={sortDir}>Recommendation</Th>
               {showSla && (
                 <>
@@ -368,6 +392,11 @@ export function TriageTable({
                     </td>
                   </>
                 )}
+                {showPriority && (
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <IssuePriorityBadge priority={r.issue.priority} />
+                  </td>
+                )}
                 <td className="px-3 py-2 whitespace-nowrap">
                   <Badge className={cn("border", RECOMMENDATION_STYLES[r.recommendation])}>
                     {r.recommendation}
@@ -409,7 +438,7 @@ export function TriageTable({
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0) + (showPing ? 1 : 0) - (showScores ? 0 : 2)} className="px-3 py-8 text-center text-fg-muted text-sm">
+                <td colSpan={7 + (showSla ? 2 : 0) + (showCreated ? 1 : 0) + (showAssignee ? 1 : 0) + (showPing ? 1 : 0) + (showPriority ? 1 : 0) - (showScores ? 0 : 2)} className="px-3 py-8 text-center text-fg-muted text-sm">
                   No tickets match the current filter.
                 </td>
               </tr>
@@ -515,6 +544,27 @@ function PingAssigneeCell({ issue }: { issue: JiraIssue }) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * Priority chip driven by the ticket's raw JIRA priority. Maps the JIRA value to
+ * a canonical P0–P3 for color + a stable label; shows the raw value when it
+ * can't be canonicalized, and "—" when the ticket has no priority.
+ */
+function IssuePriorityBadge({ priority }: { priority: string | null }) {
+  const canonical = priorityFromString(priority);
+  if (!canonical) {
+    return priority ? (
+      <span className="font-mono text-xs text-fg-muted">{priority}</span>
+    ) : (
+      <span className="text-fg-subtle text-xs">—</span>
+    );
+  }
+  return (
+    <Badge className={cn("border font-mono font-semibold", PRIORITY_BADGE_STYLES[canonical])}>
+      {canonical}
+    </Badge>
   );
 }
 
