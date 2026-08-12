@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
 import { TicketDrawer } from "@/components/ticket-drawer";
 import { ProductDefectsSyncButton } from "@/components/product-defects-sync-button";
+import { ProductDefectsExportButton } from "@/components/product-defects-export-button";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -243,6 +244,9 @@ export function ProductDefectsDashboard() {
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {report && report.analyzedTickets > 0 && (
+            <ProductDefectsExportButton report={report} jiraBaseUrl={jiraBaseUrl} />
+          )}
           <ProductDefectsSyncButton onSynced={refresh} />
         </div>
       </header>
